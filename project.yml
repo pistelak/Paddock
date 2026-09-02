@@ -1,0 +1,71 @@
+name: Paddock
+options:
+  bundleIdPrefix: com.radekpistelak
+  deploymentTarget:
+    macOS: "14.0"
+  xcodeVersion: "26.0"
+  createIntermediateGroups: true
+  generateEmptyDirectories: true
+packages:
+  GhosttyKit:
+    url: https://github.com/Lakr233/libghostty-spm.git
+    from: 1.5.2
+settings:
+  base:
+    SWIFT_VERSION: "6"
+    SWIFT_STRICT_CONCURRENCY: complete
+    CODE_SIGN_STYLE: Automatic
+    MARKETING_VERSION: 0.1.0
+    CURRENT_PROJECT_VERSION: 1
+targets:
+  Paddock:
+    type: application
+    platform: macOS
+    sources:
+      - Paddock/Sources
+      - Paddock/Resources
+    dependencies:
+      - package: GhosttyKit
+        product: GhosttyTerminal
+    info:
+      path: Paddock/Info.plist
+      properties:
+        CFBundleName: Paddock
+        CFBundleDisplayName: Paddock
+        NSPrincipalClass: NSApplication
+        NSHighResolutionCapable: true
+        LSApplicationCategoryType: public.app-category.developer-tools
+        NSHumanReadableCopyright: ""
+    entitlements:
+      path: Paddock/Paddock.entitlements
+      properties: {}
+    settings:
+      base:
+        ENABLE_APP_SANDBOX: NO
+        ENABLE_HARDENED_RUNTIME: YES
+        PRODUCT_BUNDLE_IDENTIFIER: com.radekpistelak.Paddock
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+  PaddockTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - PaddockTests
+    dependencies:
+      - target: Paddock
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.radekpistelak.PaddockTests
+        GENERATE_INFOPLIST_FILE: YES
+schemes:
+  Paddock:
+    build:
+      targets:
+        Paddock: all
+        PaddockTests: [test]
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets:
+        - PaddockTests
