@@ -55,13 +55,20 @@ space; only the space list moves out into Paddock.
 
 ## How it works
 
-- `TerminalHost` owns the single `TerminalController` (one libghostty app) and loads your Ghostty config.
+- `TerminalHost` owns the single `TerminalController` (one libghostty app) and loads your Ghostty config,
+  resolving a conditional `theme = dark:…,light:…` line first (see Troubleshooting).
 - Each tab lazily gets a `TerminalPaneViewController` whose `AppTerminalView` runs `herdr --session <name>`.
   Hidden panes keep their surface and herdr client; switching tabs only toggles visibility.
 - Each visited tab also gets a `WorkspaceStore`, which owns one session's spaces list and the connection
-  that keeps it current. It pings, subscribes to events, takes a `session.snapshot`, then reduces events
-  until the stream ends, reconnecting for ever on a 0.5 → 5 s backoff. A pane surface attaching (herdr
-  starting up) cuts the wait short. Stores outlive tab switches, so switching back is instant.
+  that keeps it current. It pings, subscribes to events, takes a `session.snapshot`, then refetches that
+  snapshot whenever an event says something moved, reconnecting for ever on a 0.5 → 5 s backoff. A pane
+  surface attaching (herdr starting up) cuts the wait short. Stores outlive tab switches, so switching back
+  is instant.
+- **Events are signals, not state.** herdr replays an unmarked historical backlog after every subscribe —
+  one event per 100 ms, nine seconds of it on a long-lived session — and nothing in the protocol separates a
+  replayed event from a live one, so their stale payloads must never be applied. `session.snapshot` is the
+  only source of rows; an event just asks for a fresh one, leading-edge debounced and floored at one every
+  250 ms.
 - The socket API is herdr's per-session Unix socket, newline-delimited JSON, **one request per connection**:
   every RPC opens a connection of its own and the events subscription keeps one for its lifetime. Reads run
   on a dedicated thread per connection publishing an `AsyncThrowingStream` — `FileHandle.bytes` cannot be
@@ -98,14 +105,22 @@ session (`paddock-qa`, started headlessly with `herdr --session paddock-qa serve
 
 ## Troubleshooting
 
-**A pane runs a plain login shell instead of `herdr --session <name>`.** The surface's command is handed to
-libghostty as `ghostty_surface_config_s.command`, and the currently pinned libghostty-spm (1.5.2, ghostty
-1.3.1) ignores that field: the child is always `/usr/bin/login -flp <user> /bin/bash --noprofile --norc -c
-exec -l <your shell>`. `working_directory` from the same struct *is* applied, so this is specific to
-`command`, and it happens identically whether the app is launched from Finder, `make run` or a shell — it is
-not an inherited-environment problem. The Spaces column is unaffected, because it talks to herdr's daemon
-socket rather than to the pane. Until the dependency gains the field back, run `herdr --session <name>` in
-the pane by hand.
+**A pane runs a plain login shell instead of `herdr --session <name>`.** A ghostty config that uses the
+conditional `theme = dark:A,light:B` syntax costs every pane its command. `Surface.init` re-derives a
+surface's config whenever the surface's conditional state differs from the state the config was loaded with
+(ghostty 1.3.1 `src/Surface.zig:468-484`), and that re-derivation replays the config file from scratch
+(`src/config/Config.zig:4325-4338`). Only `working-directory` is copied back across the rebuild, so
+everything the embedded apprt set for that one surface — `command`, `env`, `wait-after-command` — is dropped
+and ghostty falls back to the login shell; the giveaway in the log is `io_exec: shell integration
+automatically injected shell=.zsh` where a herdr pane should say `shell could not be detected`. Nothing in
+Paddock's Swift is involved, which is why `working_directory` appeared to work while `command` did not.
+
+`GhosttyConditionalTheme` resolves such a line out of the config before libghostty sees it and hands the
+light/dark pair to the package's `TerminalTheme` instead, which leaves the config unconditional. Appearance
+switching still works, and rather better: the package re-renders and pushes the new config to surfaces that
+already exist, which ghostty's own conditional does not do. Configs without a conditional theme are passed
+to libghostty untouched. If a pane still shows a bare shell, check your config for any other conditional
+value.
 
 **`herdr` refuses to start inside a pane** (`HERDR_*` already set). Paddock launched from a herdr pane
 inherits those markers and every surface's child would too, so `HerdrEnvironment.scrubInheritedMarkers()`
