@@ -34,6 +34,23 @@ final class TabStoreTests {
         try SessionName(raw)
     }
 
+    /// Seeding only reads the name; the rest is filled in from herdr's layout.
+    private func session(
+        _ raw: String,
+        isDefault: Bool = false,
+        isRunning: Bool = false
+    ) throws -> HerdrSession {
+        let sessionName = try name(raw)
+        let socketPath = HerdrPaths.socketPath(for: sessionName)
+        return HerdrSession(
+            name: sessionName,
+            socketPath: socketPath,
+            sessionDirectory: (socketPath as NSString).deletingLastPathComponent,
+            isDefault: isDefault,
+            isRunning: isRunning
+        )
+    }
+
     @Test func loadReportsMissingFile() async throws {
         let store = makeStore()
         let loaded = try await store.load()
@@ -43,9 +60,9 @@ final class TabStoreTests {
 
     @Test func seedAssignsDistinctColorsAndSkipsDuplicates() throws {
         let tabs = TabStore.seedTabs(from: [
-            HerdrSession(name: try name("default"), status: .running),
-            HerdrSession(name: try name("work"), status: .stopped),
-            HerdrSession(name: try name("work"), status: .stopped),
+            try session("default", isDefault: true, isRunning: true),
+            try session("work"),
+            try session("work"),
         ])
         #expect(tabs.map(\.sessionName.rawValue) == ["default", "work"])
         #expect(tabs[0].color != tabs[1].color)

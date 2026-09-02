@@ -6,9 +6,13 @@ import Foundation
 struct HerdrCLI: Sendable {
     let executableURL: URL
 
+    /// The sessions herdr knows about, with the socket path it reports for
+    /// each. `--json` is asked for rather than the human table because the
+    /// table has no stable column widths and drops the socket on narrow
+    /// terminals.
     func listSessions() async throws -> [HerdrSession] {
-        let output = try await run(["session", "list"])
-        return HerdrSessionListParser.parse(output)
+        let output = try await run(["session", "list", "--json"])
+        return try JSONDecoder().decode(HerdrSessionList.self, from: Data(output.utf8)).sessions
     }
 
     func stopSession(_ name: SessionName) async throws {
