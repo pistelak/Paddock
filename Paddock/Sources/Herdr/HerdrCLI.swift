@@ -19,6 +19,11 @@ struct HerdrCLI: Sendable {
         _ = try await run(["session", "stop", name.rawValue])
     }
 
+    /// Removes a stopped session's directory. herdr refuses while it runs.
+    func deleteSession(_ name: SessionName) async throws {
+        _ = try await run(["session", "delete", name.rawValue])
+    }
+
     private func run(_ arguments: [String]) async throws -> String {
         let result = try await ProcessRunner.run(executableURL, arguments: arguments)
         guard result.status == 0 else {

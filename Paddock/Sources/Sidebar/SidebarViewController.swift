@@ -26,7 +26,29 @@ final class SidebarViewController: NSViewController {
         stack.alignment = .centerX
         stack.spacing = 6
         stack.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(stack)
+
+        // Sessions are the outer level and spaces the inner one, but both
+        // columns use the same `.sidebar` material, so side by side they read
+        // as a single surface. Two things separate them: a wash that sinks the
+        // tile strip a step behind the spaces column, and a hairline on the
+        // trailing edge that mirrors the one the spaces column draws against
+        // the terminal.
+        //
+        // A wash rather than a different material (`.underPageBackground` was
+        // the alternative): with `blendingMode = .behindWindow` that material
+        // is a good deal darker than `.sidebar`, which fights the traffic
+        // lights sitting on top of this column, and it would no longer track
+        // the window's active state the way the neighbouring column does.
+        // The overlay keeps one material for both columns and makes the depth
+        // an explicit few per cent.
+        let tint = SidebarTintView()
+        let separator = NSBox()
+        separator.boxType = .separator
+
+        for subview in [tint, separator, stack] as [NSView] {
+            subview.translatesAutoresizingMaskIntoConstraints = false
+            view.addSubview(subview)
+        }
 
         addButton.onClick = { [weak self] anchor in self?.onAdd?(anchor) }
 
@@ -35,6 +57,16 @@ final class SidebarViewController: NSViewController {
             stack.topAnchor.constraint(equalTo: view.topAnchor, constant: Self.topInset),
             stack.centerXAnchor.constraint(equalTo: view.centerXAnchor),
             stack.bottomAnchor.constraint(lessThanOrEqualTo: view.bottomAnchor, constant: -12),
+
+            tint.topAnchor.constraint(equalTo: view.topAnchor),
+            tint.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            tint.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            tint.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+
+            separator.topAnchor.constraint(equalTo: view.topAnchor),
+            separator.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            separator.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            separator.widthAnchor.constraint(equalToConstant: 1),
         ])
     }
 
@@ -117,4 +149,33 @@ final class SidebarViewController: NSViewController {
 private struct ContextMenuPayload {
     let action: SidebarAction
     let id: UUID
+}
+
+/// The wash that sinks the tile strip one step behind the spaces column.
+///
+/// Drawn rather than layer-backed so a light/dark switch simply redraws it,
+/// the way `StatusDotView` and `SessionTabItemView` already work. Vibrancy is
+/// switched off: inside an `NSVisualEffectView` a vibrant fill is blended
+/// against the material and a flat black wash would come out as anything but
+/// the few per cent asked for.
+@MainActor
+private final class SidebarTintView: NSView {
+    /// Dark mode has more room between two neighbouring greys than light mode,
+    /// where the same value reads as a smudge.
+    private static let darkAlpha: CGFloat = 0.06
+    private static let lightAlpha: CGFloat = 0.03
+
+    override var allowsVibrancy: Bool { false }
+    override var isOpaque: Bool { false }
+
+    override func draw(_ dirtyRect: NSRect) {
+        let isDark = effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+        NSColor.black.withAlphaComponent(isDark ? Self.darkAlpha : Self.lightAlpha).setFill()
+        dirtyRect.fill()
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        needsDisplay = true
+    }
 }

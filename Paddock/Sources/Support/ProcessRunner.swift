@@ -7,10 +7,11 @@ struct ProcessResult: Sendable {
 }
 
 /// Runs a subprocess to completion without blocking a cooperative thread:
-/// both pipes are drained concurrently through `FileHandle.bytes` (a child
-/// that fills one pipe while we wait on the other would otherwise deadlock),
-/// and termination arrives through an `AsyncStream` fed by
-/// `terminationHandler`.
+/// both pipes are drained concurrently, each on a reader thread of its own (a
+/// child that fills one pipe while we wait on the other would otherwise
+/// deadlock, and `FileHandle.bytes` cannot give two readers that independence
+/// — see `DescriptorReader`), and termination arrives through an `AsyncStream`
+/// fed by `terminationHandler`.
 enum ProcessRunner {
     static func run(
         _ executable: URL,
@@ -35,9 +36,16 @@ enum ProcessRunner {
 
         try process.run()
 
-        async let output = readToEnd(standardOutput.fileHandleForReading)
-        async let errors = readToEnd(standardError.fileHandleForReading)
-        let (standardOutputText, standardErrorText) = try await (output, errors)
+        let outputHandle = standardOutput.fileHandleForReading
+        let errorHandle = standardError.fileHandleForReading
+        async let output = DescriptorReader.readToEnd(outputHandle)
+        async let errors = DescriptorReader.readToEnd(errorHandle)
+        let (standardOutputData, standardErrorData) = try await (output, errors)
+        // Both readers have seen EOF, so nothing is using the descriptors any
+        // more. Closing here rather than leaving it to the pipes' deallocation
+        // keeps a run from holding two descriptors longer than it needs them.
+        try? outputHandle.close()
+        try? errorHandle.close()
 
         var status: Int32 = -1
         for await value in termination {
@@ -46,17 +54,11 @@ enum ProcessRunner {
 
         return ProcessResult(
             status: status,
-            standardOutput: standardOutputText,
-            standardError: standardErrorText
+            // A command that writes something other than UTF-8 is a broken
+            // command, not a broken run: report what decoded and let the
+            // caller's own parsing fail with a message about the content.
+            standardOutput: String(decoding: standardOutputData, as: UTF8.self),
+            standardError: String(decoding: standardErrorData, as: UTF8.self)
         )
-    }
-
-    private static func readToEnd(_ handle: FileHandle) async throws -> String {
-        var text = ""
-        for try await line in handle.bytes.lines {
-            text.append(line)
-            text.append("\n")
-        }
-        return text
     }
 }
