@@ -10,6 +10,8 @@ enum PaddockError: Error, LocalizedError, Equatable {
     case herdrSocketUnavailable(path: String)
     case herdrRPC(method: String, code: String, message: String)
     case herdrProtocolMismatch(found: Int)
+    case herdrTimeout(method: String)
+    case herdrConnectionClosed(method: String)
 
     var errorDescription: String? {
         switch self {
@@ -31,6 +33,10 @@ enum PaddockError: Error, LocalizedError, Equatable {
             "herdr rejected `\(method)`: \(message) (\(code))."
         case let .herdrProtocolMismatch(found):
             "This herdr speaks API protocol \(found); Paddock was built for \(HerdrProtocol.supported)."
+        case let .herdrTimeout(method):
+            "herdr did not answer `\(method)` within \(HerdrSocketClient.requestTimeout)."
+        case let .herdrConnectionClosed(method):
+            "herdr closed the connection before answering `\(method)`."
         }
     }
 }
