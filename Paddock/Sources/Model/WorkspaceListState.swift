@@ -23,7 +23,7 @@ extension AgentStatus {
 /// Panes are tracked at all because agent status only ever arrives through the
 /// per-pane `pane.agent_status_changed` subscription (the spike found that
 /// workspace events never carry it), so the store has to know every pane id to
-/// subscribe, and the reducer has to fold the panes back into a per-workspace
+/// subscribe, and `status(of:)` has to fold the panes back into a per-workspace
 /// status. Geometry, titles and tab ids are not modelled: nothing reads them.
 struct PaneSummary: Equatable, Hashable, Sendable {
     /// Immutable: a pane never migrates between workspaces; herdr closes and
@@ -80,8 +80,8 @@ struct WorkspaceListState: Equatable, Sendable {
     }
 
     /// Derived, not stored: the `focused` flag on the rows is what the column
-    /// draws, so a second stored copy could only ever disagree with it. The
-    /// reducer keeps at most one row flagged.
+    /// draws, so a second stored copy could only ever disagree with it. Every
+    /// state comes straight from a snapshot, which flags exactly one row.
     var focusedID: String? {
         workspaces.first(where: \.focused)?.workspaceID
     }
@@ -103,9 +103,9 @@ struct WorkspaceListState: Equatable, Sendable {
     /// The status to draw for one workspace.
     ///
     /// Pane-derived (highest `displayPriority` among its panes) as soon as any
-    /// pane of that workspace is known, because pane events are the only live
-    /// source of status. Falls back to `WorkspaceInfo.agentStatus`, which is
-    /// authoritative at snapshot/list time but then goes stale.
+    /// pane of that workspace is known, because the snapshot's panes carry the
+    /// finer-grained status. Falls back to `WorkspaceInfo.agentStatus` for a
+    /// workspace whose panes are not listed.
     func status(of workspaceID: String) -> AgentStatus {
         var derived: AgentStatus?
         for pane in panes.values where pane.workspaceID == workspaceID {
@@ -126,41 +126,5 @@ struct WorkspaceListState: Equatable, Sendable {
             }
         }
         return result
-    }
-}
-
-/// `WorkspaceInfo` is decoded straight off the wire and has only `let` fields,
-/// but two events (`workspace_renamed`, `workspace_focused`) change exactly one
-/// of them. These produce the edited copy instead of making the wire type
-/// mutable, so a row can still only be built from a complete herdr payload.
-extension WorkspaceInfo {
-    func with(label: String) -> WorkspaceInfo {
-        WorkspaceInfo(
-            workspaceID: workspaceID,
-            number: number,
-            label: label,
-            focused: focused,
-            paneCount: paneCount,
-            tabCount: tabCount,
-            activeTabID: activeTabID,
-            agentStatus: agentStatus,
-            tokens: tokens,
-            worktree: worktree
-        )
-    }
-
-    func with(focused: Bool) -> WorkspaceInfo {
-        WorkspaceInfo(
-            workspaceID: workspaceID,
-            number: number,
-            label: label,
-            focused: focused,
-            paneCount: paneCount,
-            tabCount: tabCount,
-            activeTabID: activeTabID,
-            agentStatus: agentStatus,
-            tokens: tokens,
-            worktree: worktree
-        )
     }
 }

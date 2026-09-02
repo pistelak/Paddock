@@ -15,6 +15,18 @@ extension WorkspaceStore {
     /// `pane_id`s is gone (verified against herdr 0.8.0).
     static let paneNotFoundCode = "pane_not_found"
 
+    /// The floor between the *starts* of two connection attempts, whatever
+    /// ended the previous one.
+    ///
+    /// A pure safety net. Nothing should be able to reconnect in a tight loop
+    /// any more — only a snapshot can change the pane set, and no event is
+    /// applied at all — but every subscribe replays a backlog and costs herdr a
+    /// stream, so
+    /// a bug that does slip through must degrade to one stream per second
+    /// instead of the ~11k-per-run hot loop that was observed. It applies
+    /// across `restart()` too, which `scheduleResync()` calls.
+    static let minimumTimeBetweenConnections: Duration = .seconds(1)
+
     /// Why one connection attempt ended.
     enum SessionOutcome: Equatable, Sendable {
         /// herdr closed the socket — the session stopped, or the daemon
@@ -28,6 +40,8 @@ extension WorkspaceStore {
     /// Attempts, waits, attempts again, until the task is cancelled.
     func supervise() async {
         while !Task.isCancelled {
+            guard await waitForConnectionSlot() else { return }
+            lastConnectionStart = .now
             do {
                 switch try await runOneConnection() {
                 case .resubscribe:
@@ -52,8 +66,36 @@ extension WorkspaceStore {
 
     private static let streamEndedMessage = "herdr closed the connection."
 
-    /// One full attempt: ping, subscribe, snapshot, then reduce events until
-    /// the stream ends or the subscription list goes stale.
+    /// Sleeps out whatever is left of `minimumTimeBetweenConnections` since the
+    /// previous attempt started. Returns `false` if the task was cancelled
+    /// while waiting, so the caller stops instead of connecting anyway.
+    private func waitForConnectionSlot() async -> Bool {
+        guard let last = lastConnectionStart else { return true }
+        let remaining = Self.minimumTimeBetweenConnections - (ContinuousClock.now - last)
+        guard remaining > .zero else { return true }
+        // Not `try?`: swallowing cancellation here would keep a stopped store
+        // reconnecting.
+        do { try await Task.sleep(for: remaining) } catch { return false }
+        return !Task.isCancelled
+    }
+
+    /// One full attempt: ping, subscribe, snapshot, then let the stream ask for
+    /// further snapshots until it ends.
+    ///
+    /// **Ordering.** Subscribing has to come first, or a change made between
+    /// the snapshot and the subscribe would go unnoticed until the next one.
+    /// Events that arrive while the snapshot is in flight are not lost and not
+    /// a problem either: the stream buffers them, and reading one afterwards
+    /// only asks for another snapshot — one request, and it cannot regress the
+    /// rows, because no event is ever applied. That is the whole reason herdr's
+    /// unmarked, stale backlog replay is harmless here; see
+    /// `WorkspaceEventPolicy`.
+    ///
+    /// **No task group.** Nothing runs concurrently any more: the snapshot is
+    /// awaited, then the loop reads events. A quiet session parks in `next()`
+    /// for ever, which is fine — `connection` and the rows were both settled by
+    /// the snapshot before the loop started, and the subscription list is
+    /// re-checked by every resync, not by this loop.
     private func runOneConnection() async throws -> SessionOutcome {
         setConnection(.connecting)
 
@@ -65,50 +107,59 @@ extension WorkspaceStore {
             ? .live
             : .unsupportedProtocol(ping.protocolVersion)
 
-        // Subscribe *before* snapshotting: events that fire in between are
-        // buffered by the stream and applied on top of the snapshot, so
-        // nothing is missed. (herdr also replays a historical backlog right
-        // after the ack; the reducer is built to distrust it.)
         let opened = try await openEvents(Self.subscriptions(for: state))
+        // A stream that never gets an iterator keeps its socket open for
+        // ever: the reader only stops through termination. Every exit before
+        // the loop below has to end it by hand.
+        var isConsumed = false
+        defer { if !isConsumed { opened.discard() } }
         try await refreshFromSnapshot()
 
-        // The snapshot is authoritative and may know panes the subscribe did
-        // not cover. Their status would never arrive, so reopen at once.
+        // The stream was opened for the pane set of an older snapshot. Reopen
+        // it for this one, or a pane it does not cover would never report its
+        // agent status — herdr allows one request per connection, so a
+        // subscription cannot be added to a live stream.
         guard Self.subscriptions(for: state) == opened.subscriptions else { return .resubscribe }
-
+        // Getting this far means the previous immediate reconnects were
+        // productive: the pane set held still long enough to connect on it.
+        consecutiveResubscribes = 0
         backoff.reset()
         setConnection(connected)
 
+        isConsumed = true
         for try await event in opened.stream {
-            // Reaching the stream at all means the previous immediate
-            // reconnects were productive.
-            consecutiveResubscribes = 0
-            let outcome = reduce(event)
-            guard outcome.contains(.resubscribe),
-                  Self.subscriptions(for: state) != opened.subscriptions
-            else { continue }
-            // Breaking out drops the stream, which shuts the socket down.
-            return .resubscribe
+            handle(event)
         }
         return .streamEnded
+    }
+
+    /// A subscribed events connection: the stream, and the list herdr actually
+    /// accepted — which is not always the list that was asked for.
+    struct OpenedEvents: Sendable {
+        let stream: AsyncThrowingStream<HerdrEvent, Error>
+        let subscriptions: [HerdrSubscription]
+
+        /// Ends a stream nobody is going to iterate. Termination — which is
+        /// what shuts the socket down — only happens through an iterator, so
+        /// one is created and cancelled on the spot: `next()` on an already
+        /// cancelled task terminates the stream before reading anything.
+        func discard() {
+            let stream = stream
+            Task.detached { for try await _ in stream {} }.cancel()
+        }
     }
 
     /// Subscribes, retrying once against a fresh snapshot if herdr rejects a
     /// pane id — the list was built from a snapshot that has since gone stale,
     /// and a second rejection is a real failure worth backing off from.
-    ///
-    /// Returns the list that was actually accepted, so the caller can compare
-    /// it against the one the snapshot implies.
-    private func openEvents(
-        _ requested: [HerdrSubscription]
-    ) async throws -> (stream: AsyncThrowingStream<HerdrEvent, Error>, subscriptions: [HerdrSubscription]) {
+    private func openEvents(_ requested: [HerdrSubscription]) async throws -> OpenedEvents {
         do {
-            return (try await client.events(requested), requested)
+            return OpenedEvents(stream: try await client.events(requested), subscriptions: requested)
         } catch let error as PaddockError {
             guard case let .herdrRPC(_, code, _) = error, code == Self.paneNotFoundCode else { throw error }
             try await refreshFromSnapshot()
             let retried = Self.subscriptions(for: state)
-            return (try await client.events(retried), retried)
+            return OpenedEvents(stream: try await client.events(retried), subscriptions: retried)
         }
     }
 

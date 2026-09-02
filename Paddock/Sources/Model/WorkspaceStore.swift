@@ -10,10 +10,23 @@ import Foundation
 /// idle session during the spike) and every event would otherwise be a render.
 ///
 /// The store owns a supervising `Task` that reconnects for ever: ping, open
-/// the events connection, take a `session.snapshot`, then reduce events until
-/// the stream ends. A dead session is not an error state to recover from by
-/// hand — it is just a longer wait between attempts — so `state` is never
-/// cleared on failure and the column keeps drawing the last known rows dimmed.
+/// the events connection, take a `session.snapshot`, then let the stream drive
+/// further snapshots until it ends. A dead session is not an error state to
+/// recover from by hand — it is just a longer wait between attempts — so
+/// `state` is never cleared on failure and the column keeps drawing the last
+/// known rows dimmed.
+///
+/// **`session.snapshot` is the only source of state.** No event is ever applied
+/// to `state`; events only say *something may have moved* and the store
+/// refetches. The reason is herdr's replay: every `events.subscribe` ack is
+/// followed by an unmarked historical backlog, paced at one event per 100 ms
+/// (measured 2026-09-02 on the `default` session: 89 `workspace_focused` events
+/// over 9.1 s), with nothing in the protocol — no cursor, no `seq`, no
+/// timestamp, no opt-out — to tell a replayed event from a live one. Replayed
+/// content is *stale*, so applying it drags the rows back through the session's
+/// history; that is what walked the focused pill across the column for ten
+/// seconds after every connect. Refetching instead is bounded work
+/// (`minimumSnapshotInterval`) and always lands on the present.
 ///
 /// **The supervising task retains the store while it runs**, so a store that
 /// is started and then dropped without `stop()` stays alive with its socket
@@ -47,9 +60,24 @@ final class WorkspaceStore {
         }
     }
 
-    /// How long a burst of `needsResync` events is allowed to accumulate
-    /// before one `session.snapshot` settles all of them.
-    static let resyncDebounce: Duration = .milliseconds(200)
+    /// How many snapshot failures in a row a pump tolerates while the event
+    /// stream is still up, and the pause between them.
+    static let maximumSnapshotFailures = 3
+    static let snapshotFailurePause: Duration = .seconds(1)
+
+    /// The floor between the *starts* of two `session.snapshot` requests, which
+    /// is also the window a burst of events coalesces in.
+    ///
+    /// The debounce is leading-edge: the first event after a quiet spell
+    /// refetches straight away, so the pill follows a click or a `herdr
+    /// workspace focus` within about ten milliseconds. Everything that arrives
+    /// while that snapshot is in flight, or inside the floor behind it, folds
+    /// into one trailing refetch. herdr's 100 ms backlog replay therefore costs
+    /// at most four snapshots a second instead of one per event, and a nine
+    /// second replay costs ~36 requests that each cost nothing to apply
+    /// (`WorkspaceListState` is `Equatable`; an unchanged state is not a
+    /// render).
+    static let minimumSnapshotInterval: Duration = .milliseconds(250)
 
     let sessionName: SessionName
     let socketPath: String
@@ -77,6 +105,11 @@ final class WorkspaceStore {
     /// Guards against a pane set that keeps changing between the subscribe and
     /// the snapshot: reconnecting without a pause is only free a few times.
     var consecutiveResubscribes = 0
+    /// When the last connection attempt began, so `supervise()` can enforce a
+    /// floor between two of them. Kept on the store rather than in the loop
+    /// because `restart()` replaces the loop — a resync that changes the pane
+    /// set does exactly that — and the floor has to survive it.
+    var lastConnectionStart: ContinuousClock.Instant?
 
     /// `client` is injectable so a test can point the store at a socket of its
     /// own; there is deliberately no protocol seam, because everything worth
@@ -108,6 +141,7 @@ final class WorkspaceStore {
         supervisor?.cancel()
         resync?.cancel()
         resync = nil
+        needsSnapshot = false
         notification?.cancel()
         notification = nil
         isDirty = false
@@ -185,6 +219,10 @@ final class WorkspaceStore {
     /// one request instead of two, and no window in which the two disagree.
     @discardableResult
     func refreshFromSnapshot() async throws -> WorkspaceListState {
+        // Recorded here rather than in the pump so that *every* snapshot — the
+        // connection's first one, the `pane_not_found` retry, a resync — feeds
+        // the same rate floor.
+        lastSnapshotStart = .now
         let result: SessionSnapshotResult = try await client.request("session.snapshot")
         apply(WorkspaceListState(snapshot: result.snapshot))
         return state
@@ -196,11 +234,13 @@ final class WorkspaceStore {
         markDirty()
     }
 
-    func reduce(_ event: HerdrEvent) -> WorkspaceReducer.Outcome {
-        let outcome = WorkspaceReducer.apply(event, to: &state)
-        if outcome.contains(.changed) { markDirty() }
-        if outcome.contains(.needsResync) { scheduleResync() }
-        return outcome
+    /// Handles one stream event: at most a request for a fresh snapshot.
+    ///
+    /// The event's payload is never read — see `WorkspaceEventPolicy` for why
+    /// a replayed backlog makes that the only safe rule.
+    func handle(_ event: HerdrEvent) {
+        guard WorkspaceEventPolicy.effect(of: event) == .resync else { return }
+        scheduleResync()
     }
 
     func setConnection(_ newValue: ConnectionState) {
@@ -211,28 +251,80 @@ final class WorkspaceStore {
 
     // MARK: - Resync
 
-    /// Debounces the `needsResync` outcome: a backlog replay can produce
-    /// dozens of them in a row, and one snapshot settles them all.
+    /// Set by an event, cleared by the snapshot that answers it. The flag —
+    /// not a task per event — is what carries the request, so a hundred
+    /// replayed events cost one pending snapshot rather than a hundred
+    /// cancelled tasks.
+    private var needsSnapshot = false
+
+    /// When the most recent `session.snapshot` request went out, for the rate
+    /// floor. Set inside `refreshFromSnapshot()`, so every caller feeds it.
+    private var lastSnapshotStart: ContinuousClock.Instant?
+
+    /// Records that the world may have moved and makes sure a snapshot
+    /// follows: immediately if none has gone out for `minimumSnapshotInterval`,
+    /// otherwise as one trailing refetch shared with every other event in the
+    /// window.
     ///
-    /// If the snapshot turns up panes the current subscription list does not
+    /// If a snapshot turns up panes the current subscription list does not
     /// cover, the events connection is reopened — nothing else would notice,
-    /// because the loop is parked inside `for try await`.
-    private func scheduleResync() {
-        resync?.cancel()
+    /// because the connection loop is parked inside `for try await`.
+    func scheduleResync() {
+        guard isRunning else { return }
+        needsSnapshot = true
+        guard resync == nil else { return }
         resync = Task { @MainActor [weak self] in
-            // Not `try?`: that would swallow cancellation and resync anyway.
-            do { try await Task.sleep(for: WorkspaceStore.resyncDebounce) } catch { return }
-            guard let self, !Task.isCancelled else { return }
-            self.resync = nil
-            let before = WorkspaceStore.subscriptions(for: self.state)
-            // A failed resync is not reported: the same failure is about to
-            // end the event stream, and the supervisor owns that story.
-            guard (try? await self.refreshFromSnapshot()) != nil else { return }
-            guard !Task.isCancelled else { return }
-            if WorkspaceStore.subscriptions(for: self.state) != before {
-                self.restart()
-            }
+            await self?.pumpSnapshots()
         }
+    }
+
+    /// Snapshots until nothing is pending, one at a time, never faster than
+    /// `minimumSnapshotInterval`.
+    ///
+    /// Clearing `resync` on the way out happens in the same synchronous stretch
+    /// as the last `needsSnapshot` check, so an event that arrives after that
+    /// check always finds `resync == nil` and starts a fresh pump: no request
+    /// can be swallowed by the hand-over.
+    private func pumpSnapshots() async {
+        defer { resync = nil }
+        var failures = 0
+        while needsSnapshot {
+            guard isRunning, !Task.isCancelled else { return }
+            guard await waitForSnapshotSlot() else { return }
+            // Cleared *before* the request: an event that fires while it is in
+            // flight describes a world the answer may predate, so it has to
+            // leave another snapshot pending.
+            needsSnapshot = false
+            let before = WorkspaceStore.subscriptions(for: state)
+            do {
+                try await refreshFromSnapshot()
+            } catch {
+                // The world still changed, so the invalidation is kept and
+                // retried after a pause. A session that is really gone ends
+                // the event stream instead, and the supervisor's reconnect
+                // snapshots anyway; that story is not reported from here.
+                needsSnapshot = true
+                failures += 1
+                guard failures < Self.maximumSnapshotFailures else { return }
+                do { try await Task.sleep(for: Self.snapshotFailurePause) } catch { return }
+                continue
+            }
+            failures = 0
+            guard isRunning, !Task.isCancelled else { return }
+            guard WorkspaceStore.subscriptions(for: state) == before else { return restart() }
+        }
+    }
+
+    /// Sleeps out whatever is left of `minimumSnapshotInterval` since the last
+    /// snapshot went out. Returns `false` if the store was stopped or the task
+    /// cancelled while waiting.
+    private func waitForSnapshotSlot() async -> Bool {
+        guard let last = lastSnapshotStart else { return true }
+        let remaining = WorkspaceStore.minimumSnapshotInterval - (ContinuousClock.now - last)
+        guard remaining > .zero else { return true }
+        // Not `try?`: swallowing cancellation here would snapshot after stop().
+        do { try await Task.sleep(for: remaining) } catch { return false }
+        return isRunning && !Task.isCancelled
     }
 
     // MARK: - Coalescing
