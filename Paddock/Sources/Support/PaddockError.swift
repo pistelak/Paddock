@@ -7,6 +7,9 @@ enum PaddockError: Error, LocalizedError, Equatable {
     case duplicateSession(String)
     case unsupportedTabsFile(version: Int)
     case corruptTabsFile(String)
+    case herdrSocketUnavailable(path: String)
+    case herdrRPC(method: String, code: String, message: String)
+    case herdrProtocolMismatch(found: Int)
 
     var errorDescription: String? {
         switch self {
@@ -22,6 +25,12 @@ enum PaddockError: Error, LocalizedError, Equatable {
             "The saved tab list has format version \(version), which this version of Paddock cannot read."
         case let .corruptTabsFile(reason):
             "The saved tab list is not usable: \(reason)."
+        case let .herdrSocketUnavailable(path):
+            "No herdr is listening on \(path). The session is probably not running yet."
+        case let .herdrRPC(method, code, message):
+            "herdr rejected `\(method)`: \(message) (\(code))."
+        case let .herdrProtocolMismatch(found):
+            "This herdr speaks API protocol \(found); Paddock was built for \(HerdrProtocol.supported)."
         }
     }
 }
