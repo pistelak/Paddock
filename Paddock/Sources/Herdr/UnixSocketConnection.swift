@@ -4,35 +4,49 @@ import os
 /// One connected `AF_UNIX` stream socket, owned for the life of a single herdr
 /// exchange (one request, or one events subscription).
 ///
-/// Reading goes through `FileHandle.bytes.lines`, the same buffered
-/// async-lines pattern `Support/ProcessRunner.swift` uses for pipes: it gives
-/// NDJSON framing for free and never busy-waits. `NWConnection` was the
-/// alternative and would have needed a `DispatchQueue` (against the project's
-/// Swift-Concurrency-only rule) plus hand-rolled framing.
+/// Reading is a blocking `read(2)` loop on a thread of this connection's own,
+/// published as an `AsyncThrowingStream` of NDJSON lines.
+///
+/// It used to be `FileHandle.bytes.lines`, the async-lines pattern
+/// `Support/ProcessRunner.swift` uses for pipes, and that was wrong here:
+/// Foundation drives every `AsyncBytes` iteration in a process through shared
+/// machinery, so one reader parked in `read(2)` starves all the others. A pipe
+/// is read to the end of a command and lets go; an events subscription is
+/// parked for as long as its tab exists, which stalled the *next* herdr
+/// request — and `ProcessRunner`'s pipes with it — for ever. A thread of its
+/// own blocks nothing but itself. (`NWConnection`, the other option, would have
+/// needed a `DispatchQueue` — against the project's Swift-Concurrency-only
+/// rule — plus hand-rolled framing, which this now has anyway.)
 ///
 /// Shutting down is deliberately two-phase. `shutdown(2)` ends a blocked read
 /// with a clean EOF; only once the read loop has finished may the descriptor be
 /// closed. Calling `close(2)` on a descriptor another thread is blocked in
 /// throws `EBADF` and — worse — frees the number for immediate reuse, so
-/// `close()` here is what the *reader* calls when its loop ends, and everyone
-/// else calls `shutdown()`.
+/// `close()` releases the descriptor itself only when no reader is running and
+/// otherwise leaves that to the reader thread.
 ///
-/// `@unchecked Sendable`: `FileHandle` is not `Sendable`, but this type only
-/// ever hands it out as a fresh `bytes` sequence, and the descriptor's
-/// lifecycle is serialised by the lock below.
+/// `@unchecked Sendable`: the descriptor's whole lifecycle is serialised by the
+/// lock below, and the read buffer belongs to the one reader thread.
 final class UnixSocketConnection: @unchecked Sendable {
-    /// How the descriptor may still be used. Once `close()` has run the number
-    /// can be handed to an unrelated socket, so every syscall is gated on this
-    /// to make a late `shutdown()` (from a stream's `onTermination`, say) a
-    /// no-op instead of a wild write into someone else's connection.
+    /// How the descriptor may still be used. Once it is released the number can
+    /// be handed to an unrelated socket, so every syscall is gated on this to
+    /// make a late `shutdown()` (from a stream's `onTermination`, say) a no-op
+    /// instead of a wild write into someone else's connection.
     private struct Lifecycle {
         var isOpen = true
+        /// A reader thread owns the descriptor and may be blocked in `read(2)`.
+        var isReading = false
+        /// `close()` came while a reader was running; the reader closes.
+        var isCloseRequested = false
     }
+
+    /// One `read(2)` at a time. Lines are single JSON objects and herdr's
+    /// bursts are small, so this is comfortably more than one turn's worth.
+    private static let readBufferSize = 16 * 1024
 
     let path: String
 
     private let descriptor: Int32
-    private let handle: FileHandle
     /// An unfair lock, not an actor: these are three non-blocking syscalls that
     /// have to be callable from synchronous cancellation handlers.
     private let lifecycle = OSAllocatedUnfairLock(initialState: Lifecycle())
@@ -76,14 +90,76 @@ final class UnixSocketConnection: @unchecked Sendable {
         }
 
         self.descriptor = descriptor
-        handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: false)
     }
 
-    /// The socket's newline-delimited lines. Create this once per connection:
-    /// each call starts a fresh buffered reader, so a second one would race the
-    /// first for bytes.
-    var lines: AsyncLineSequence<FileHandle.AsyncBytes> {
-        handle.bytes.lines
+    /// The socket's newline-delimited lines, read on a thread of its own.
+    ///
+    /// Create this once per connection: every call starts another reader, and
+    /// two of them would race for the same bytes. Dropping the stream (or
+    /// cancelling the task iterating it) shuts the socket down, which ends the
+    /// thread with a clean EOF.
+    var lines: AsyncThrowingStream<Data, Error> {
+        AsyncThrowingStream { continuation in
+            // Claimed here, synchronously, rather than on the thread: a
+            // `close()` in between would otherwise pull the descriptor out from
+            // under a reader that has not started yet.
+            lifecycle.withLock { $0.isReading = true }
+            continuation.onTermination = { [self] _ in shutdown() }
+
+            let thread = Thread { [self] in
+                var pending = Data()
+                do {
+                    while let chunk = try readChunk() {
+                        pending.append(chunk)
+                        while let newline = pending.firstIndex(of: UInt8(ascii: "\n")) {
+                            continuation.yield(Data(pending[..<newline]))
+                            pending = Data(pending[pending.index(after: newline)...])
+                        }
+                    }
+                    // herdr terminates every line, but a last unterminated one
+                    // is still a line and not worth losing.
+                    if !pending.isEmpty { continuation.yield(pending) }
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+                finishReading()
+            }
+            thread.name = "herdr-socket-reader"
+            thread.stackSize = 256 * 1024
+            thread.start()
+        }
+    }
+
+    /// One blocking `read(2)`, or `nil` at end of stream — which is also what a
+    /// `shutdown()` from another thread produces, so a torn-down connection
+    /// ends its stream cleanly instead of throwing.
+    ///
+    /// Only the reader thread calls this, and `close()` never releases the
+    /// descriptor while that thread runs, so it cannot read a reused number.
+    private func readChunk() throws -> Data? {
+        var buffer = [UInt8](repeating: 0, count: Self.readBufferSize)
+        while true {
+            let count = buffer.withUnsafeMutableBytes { raw in
+                Darwin.read(descriptor, raw.baseAddress, raw.count)
+            }
+            if count > 0 { return Data(buffer[0 ..< count]) }
+            if count == 0 { return nil }
+            let code = errno
+            if code == EINTR { continue }
+            throw Self.error(errno: code, path: path)
+        }
+    }
+
+    /// Hands the descriptor back and honours a `close()` that arrived while the
+    /// reader was running.
+    private func finishReading() {
+        let shouldClose = lifecycle.withLock { state -> Bool in
+            state.isReading = false
+            return state.isCloseRequested
+        }
+        guard shouldClose else { return }
+        close()
     }
 
     /// Writes one already newline-terminated request line, looping over short
@@ -120,10 +196,17 @@ final class UnixSocketConnection: @unchecked Sendable {
         }
     }
 
-    /// Releases the descriptor. Call this only once the read loop has ended.
+    /// Ends the connection. Safe to call at any time and from any thread: while
+    /// a reader thread is running the descriptor is only shut down, and the
+    /// reader releases it when its loop ends a moment later.
     func close() {
         lifecycle.withLock { state in
             guard state.isOpen else { return }
+            guard !state.isReading else {
+                state.isCloseRequested = true
+                _ = Darwin.shutdown(descriptor, SHUT_RDWR)
+                return
+            }
             state.isOpen = false
             _ = Darwin.shutdown(descriptor, SHUT_RDWR)
             _ = Darwin.close(descriptor)

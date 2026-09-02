@@ -12,10 +12,22 @@ final class TabCoordinator {
     let herdrExecutable: URL
     let herdr: HerdrCLI
     let sidebar = SidebarViewController()
+    let spaces = WorkspaceColumnViewController()
     let panes = PaneContainerViewController()
     weak var window: NSWindow?
 
     private let defaults: UserDefaults
+
+    /// One spaces store per tab, created the first time its tile is selected
+    /// and kept running afterwards so switching back is instant. The store's
+    /// supervising task retains it, so dropping one without `stop()` would
+    /// leak a socket — `remove(_:)` is the only place that drops one.
+    private var workspaceStores: [UUID: WorkspaceStore] = [:]
+
+    /// What `herdr session list` last said, keyed by name. Only the socket
+    /// path is read from it: a tab may name a session herdr has never created,
+    /// and `HerdrPaths` covers that case.
+    private var knownSessions: [SessionName: HerdrSession] = [:]
 
     /// The selected tab of this window. Read from defaults once at start
     /// and written back on change, so it is this instance's state rather
@@ -40,6 +52,12 @@ final class TabCoordinator {
         }
         sidebar.onAction = { [weak self] action, id in self?.handle(action, tabID: id) }
         sidebar.onAdd = { [weak self] anchor in self?.showAddMenu(from: anchor) }
+        spaces.onAction = { [weak self] action, id in self?.handle(action, workspaceID: id) }
+        spaces.onCreate = { [weak self] _ in
+            Task { await self?.createSpace() }
+        }
+
+        Task { [weak self] in await self?.refreshKnownSessions() }
 
         let initial = selectedTabID.flatMap(store.tab(withID:)) ?? store.tabs.first
         if let initial {
@@ -53,6 +71,9 @@ final class TabCoordinator {
 
     private func select(_ tab: SessionTab) {
         selectedTabID = tab.id
+        // Before the pane, so the store exists when its surface attaches and
+        // asks for an immediate retry.
+        spaces.bind(workspaceStore(for: tab))
         panes.select(tab) { [self] in makePane(for: tab) }
         refreshPresentation()
     }
@@ -76,6 +97,15 @@ final class TabCoordinator {
         case .titleChanged:
             guard tabID == selectedTabID else { return }
             updateWindowTitle()
+        case .surfaceAttached:
+            // herdr is coming up in that surface: whatever the store was
+            // waiting for, now is the moment to try again.
+            workspaceStores[tabID]?.retryNow()
+        case .surfaceClosed:
+            // Nothing to do: herdr's daemon keeps serving a detached session,
+            // and a session that really ended is noticed by the store's own
+            // reconnect loop within a couple of seconds.
+            break
         }
     }
 
@@ -86,6 +116,56 @@ final class TabCoordinator {
         }
         let terminalTitle = panes.pane(for: id)?.lastTitle
         window?.title = [tab.displayName, terminalTitle].compactMap { $0 }.joined(separator: " — ")
+    }
+
+    // MARK: - Spaces stores
+
+    /// The store for one tab, started on creation and kept until the tab goes.
+    private func workspaceStore(for tab: SessionTab) -> WorkspaceStore {
+        if let existing = workspaceStores[tab.id] { return existing }
+        let workspaces = WorkspaceStore(
+            sessionName: tab.sessionName,
+            socketPath: socketPath(for: tab.sessionName)
+        )
+        workspaceStores[tab.id] = workspaces
+        workspaces.start()
+        return workspaces
+    }
+
+    /// herdr's own answer when it has one, the computed layout otherwise — a
+    /// tab may name a session that has never been created, and the column
+    /// still needs an address to keep trying.
+    private func socketPath(for name: SessionName) -> String {
+        knownSessions[name]?.socketPath ?? HerdrPaths.socketPath(for: name)
+    }
+
+    /// Asks herdr for its sessions once at start-up. A failure is deliberately
+    /// silent: every socket path has a fallback, and the add menu is where
+    /// listing sessions is the user's own request and worth an alert.
+    private func refreshKnownSessions() async {
+        guard let sessions = try? await herdr.listSessions() else { return }
+        cache(sessions)
+    }
+
+    private func cache(_ sessions: [HerdrSession]) {
+        knownSessions = Dictionary(sessions.map { ($0.name, $0) }, uniquingKeysWith: { first, _ in first })
+        replaceStoresWithStaleSockets()
+    }
+
+    /// A store created before herdr had been asked is pointed at the fallback
+    /// path. If herdr later reports another one, that store would keep failing
+    /// against an address nothing listens on, so it is replaced outright — and
+    /// rebound when it is the store on screen.
+    private func replaceStoresWithStaleSockets() {
+        for (tabID, workspaces) in workspaceStores {
+            guard let tab = store.tab(withID: tabID),
+                  socketPath(for: tab.sessionName) != workspaces.socketPath
+            else { continue }
+            workspaces.stop()
+            workspaceStores[tabID] = nil
+            guard tabID == selectedTabID else { continue }
+            spaces.bind(workspaceStore(for: tab))
+        }
     }
 
     // MARK: - Actions
@@ -121,12 +201,16 @@ final class TabCoordinator {
     private func remove(_ tab: SessionTab) {
         let wasSelected = selectedTabID == tab.id
         panes.removePane(for: tab.id)
+        // Without `stop()` the supervising task keeps the store — and its
+        // socket — alive for the lifetime of the app.
+        workspaceStores.removeValue(forKey: tab.id)?.stop()
         store.removeTab(id: tab.id)
         guard wasSelected else { return }
         if let next = store.tabs.first {
             select(next)
         } else {
             selectedTabID = nil
+            spaces.bind(nil)
             refreshPresentation()
         }
     }
@@ -142,6 +226,102 @@ final class TabCoordinator {
         guard confirmed else { return }
         do {
             try await herdr.stopSession(tab.sessionName)
+        } catch {
+            AlertPresenter.present(error, in: window)
+        }
+    }
+
+    // MARK: - Spaces actions
+    //
+    // Every one of these runs against the *selected* tab's store, because that
+    // is the store the column is bound to and the only one whose rows the user
+    // can click. A failed focus is a footnote in the column's footer — it is
+    // one click among many — while a failed create, rename or close answers a
+    // dialog the user just filled in and gets an alert of its own.
+
+    private var selectedWorkspaceStore: WorkspaceStore? {
+        selectedTabID.flatMap { workspaceStores[$0] }
+    }
+
+    private func handle(_ action: WorkspaceAction, workspaceID: String) {
+        guard let workspaces = selectedWorkspaceStore else { return }
+        switch action {
+        case .focus:
+            Task {
+                do {
+                    try await workspaces.focus(workspaceID)
+                    // The click landed in the column; the keyboard belongs to
+                    // the terminal that just changed space — unless the user
+                    // has moved to another tab meanwhile, whose pane and
+                    // column must not react to a stale completion.
+                    guard selectedWorkspaceStore === workspaces else { return }
+                    panes.focusSelectedPane()
+                } catch {
+                    guard selectedWorkspaceStore === workspaces else { return }
+                    spaces.showTransientError(error.localizedDescription)
+                }
+            }
+        case .rename:
+            Task { await renameSpace(workspaceID, in: workspaces) }
+        case .close:
+            Task { await closeSpace(workspaceID, in: workspaces) }
+        }
+    }
+
+    private func renameSpace(_ workspaceID: String, in workspaces: WorkspaceStore) async {
+        guard let workspace = workspaces.state.workspace(workspaceID) else { return }
+        guard let raw = await AlertPresenter.promptForText(
+            title: "Rename Space",
+            message: "Shown in the Spaces column and in herdr’s own tab bar.",
+            placeholder: "Label",
+            initialValue: workspace.label,
+            confirmTitle: "Rename",
+            in: window
+        ) else { return }
+        let label = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !label.isEmpty else { return }
+        do {
+            try await workspaces.rename(workspaceID, to: label)
+        } catch {
+            AlertPresenter.present(error, in: window)
+        }
+    }
+
+    private func closeSpace(_ workspaceID: String, in workspaces: WorkspaceStore) async {
+        guard let workspace = workspaces.state.workspace(workspaceID) else { return }
+        let confirmed = await AlertPresenter.confirm(
+            title: "Close space “\(Self.displayName(of: workspace))”?",
+            message: "Every pane and agent in it will be terminated.",
+            confirmTitle: "Close Space",
+            destructive: true,
+            in: window
+        )
+        guard confirmed else { return }
+        do {
+            try await workspaces.close(workspaceID)
+        } catch {
+            AlertPresenter.present(error, in: window)
+        }
+    }
+
+    /// A space herdr has no label for is known by its number, exactly as the
+    /// row draws it.
+    private static func displayName(of workspace: WorkspaceInfo) -> String {
+        workspace.label.isEmpty ? "\(workspace.number)" : workspace.label
+    }
+
+    private func createSpace() async {
+        guard let workspaces = selectedWorkspaceStore else { return }
+        guard let raw = await AlertPresenter.promptForText(
+            title: "New Space",
+            message: "herdr creates the space and moves to it.",
+            placeholder: "Label (optional)",
+            confirmTitle: "Create",
+            in: window
+        ) else { return }
+        let label = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        do {
+            try await workspaces.create(label: label.isEmpty ? nil : label)
         } catch {
             AlertPresenter.present(error, in: window)
         }
@@ -171,9 +351,14 @@ final class TabCoordinator {
 
     /// herdr sessions with a valid name that have no tab yet. A failure to
     /// list them is reported, not mistaken for "none".
+    ///
+    /// The full list is cached on the way past: this is the one call that
+    /// happens often enough to keep the socket paths current.
     private func untabbedSessions() async -> [SessionName] {
         do {
-            return try await herdr.listSessions()
+            let sessions = try await herdr.listSessions()
+            cache(sessions)
+            return sessions
                 .map(\.name)
                 .filter { store.tab(forSession: $0) == nil }
         } catch {

@@ -65,6 +65,27 @@ struct HerdrSocketClientLiveTests {
         #expect(ping.protocolVersion > 0)
     }
 
+    /// The regression that made the spaces column unusable: an events stream
+    /// stays parked in `read(2)` for as long as its tab exists, and while
+    /// `FileHandle.bytes` did that reading, Foundation's shared machinery let
+    /// it starve every other reader in the process — so the very next herdr
+    /// request (a row click, a second session's snapshot) never returned.
+    @Test func aRequestWorksWhileAnEventsStreamIsParked() async throws {
+        let streaming = HerdrSocketClient(socketPath: socketPath)
+        let stream = try await streaming.events(HerdrSubscription.workspaceKinds)
+
+        let start = ContinuousClock.now
+        let ping: PingResult = try await HerdrSocketClient(socketPath: socketPath).request("ping")
+        #expect(ping.protocolVersion > 0)
+        #expect(
+            ContinuousClock.now - start < .seconds(5),
+            "a parked stream must not hold up an unrelated request"
+        )
+        // Nothing iterates the stream: it has to stay alive (and parked) for
+        // the whole request, which is exactly the situation that used to hang.
+        withExtendedLifetime(stream) {}
+    }
+
     @Test func anUnknownMethodSurfacesAsAnRPCError() async throws {
         let client = HerdrSocketClient(socketPath: socketPath)
         let error = try #require(

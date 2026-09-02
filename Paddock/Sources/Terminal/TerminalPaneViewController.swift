@@ -139,7 +139,10 @@ final class TerminalPaneViewController: NSViewController {
 
 // MARK: - Terminal delegates
 
-extension TerminalPaneViewController: TerminalSurfaceTitleDelegate, TerminalSurfaceCloseDelegate {
+extension TerminalPaneViewController: TerminalSurfaceTitleDelegate,
+    TerminalSurfaceCloseDelegate,
+    TerminalSurfaceLifecycleDelegate
+{
     func terminalDidChangeTitle(_ title: String) {
         lastTitle = title
         onEvent?(.titleChanged(title))
@@ -147,5 +150,18 @@ extension TerminalPaneViewController: TerminalSurfaceTitleDelegate, TerminalSurf
 
     func terminalDidClose(processAlive: Bool) {
         showOverlay(processAlive: processAlive)
+        onEvent?(.surfaceClosed(processAlive: processAlive))
+    }
+
+    /// The surface exists, so the `herdr` process behind it has just been
+    /// spawned: the moment a session that was not running starts to answer.
+    func terminalDidAttachSurface(_: TerminalSurface) {
+        onEvent?(.surfaceAttached)
+    }
+
+    func terminalDidDetachSurface() {
+        // Nothing to report: a detach happens both when herdr ends (which
+        // `terminalDidClose(processAlive:)` already covers) and when the pane
+        // is torn down on purpose, and neither needs a second event.
     }
 }

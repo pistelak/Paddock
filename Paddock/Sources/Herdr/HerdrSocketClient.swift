@@ -101,8 +101,7 @@ actor HerdrSocketClient {
             var isAcknowledged = false
             do {
                 try connection.writeLine(line)
-                for try await text in connection.lines {
-                    let data = Data(text.utf8)
+                for try await data in connection.lines {
                     guard !data.isEmpty else { continue }
                     if isAcknowledged {
                         // A malformed line after the ack is skipped, never
@@ -178,8 +177,8 @@ actor HerdrSocketClient {
     /// Reads the first non-empty line, or throws if herdr closes first.
     private static func firstLine(from connection: UnixSocketConnection, method: String) async throws -> Data {
         try await withTimeout(method: method, interrupt: { connection.shutdown() }) {
-            for try await text in connection.lines where !text.isEmpty {
-                return Data(text.utf8)
+            for try await line in connection.lines where !line.isEmpty {
+                return line
             }
             throw PaddockError.herdrConnectionClosed(method: method)
         }

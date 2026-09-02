@@ -21,8 +21,9 @@ import Testing
 ///         -only-testing:PaddockTests/WorkspaceStoreLiveTests
 ///
 /// `PADDOCK_LIVE_HERDR_SOCKET` picks the session; it defaults to `work`.
-/// Every call here is read-only: the store's `focus` / `create` / `rename` /
-/// `close` are never exercised against a real session.
+/// Everything here is read-only except `aThrowawaySpaceSurvivesEveryMutation`,
+/// which creates a space of its own and only ever focuses, renames and closes
+/// *that* one — no space the user made is touched.
 @Suite(.enabled(if: ProcessInfo.processInfo.environment["PADDOCK_LIVE_HERDR"] == "1"))
 struct WorkspaceStoreLiveTests {
     private let socketPath = ProcessInfo.processInfo.environment["PADDOCK_LIVE_HERDR_SOCKET"]
@@ -83,6 +84,81 @@ struct WorkspaceStoreLiveTests {
         store.retryNow()
         #expect(store.connection.isConnected, "a live connection is left alone")
         store.stop()
+    }
+
+    /// The four mutations the coordinator wires to the column, against a real
+    /// herdr, on a space this test creates for the purpose: create, focus,
+    /// rename, close. Each one is verified the way the column sees it — by
+    /// waiting for the `workspace_*` event to come back down the stream and
+    /// change `state` — because that round trip *is* the contract: the store
+    /// never applies a mutation to its own rows.
+    @MainActor
+    @Test func aThrowawaySpaceSurvivesEveryMutation() async throws {
+        let store = WorkspaceStore(sessionName: try SessionName("work"), socketPath: socketPath)
+        store.start()
+        defer { store.stop() }
+        try await waitUntil(timeout: .seconds(20)) {
+            store.connection.isConnected && !store.state.workspaces.isEmpty
+        }
+
+        // Anything an interrupted earlier run left behind goes first, so a
+        // live session never accumulates junk.
+        await closeThrowawaySpaces(in: store)
+
+        let label = Self.throwawayPrefix + String(UInt32.random(in: 0 ... .max))
+        let existing = Set(store.state.workspaces.map(\.workspaceID))
+        try await store.create(label: label)
+
+        do {
+            try await waitUntil(timeout: .seconds(10)) {
+                store.state.workspaces.contains { !existing.contains($0.workspaceID) && $0.label == label }
+            }
+            let workspaceID = try #require(
+                store.state.workspaces.first { !existing.contains($0.workspaceID) && $0.label == label }
+            ).workspaceID
+
+            // `create` asks for focus, so the pill has already moved; calling
+            // `focus` again is exactly what a row click does and has to be
+            // idempotent.
+            try await store.focus(workspaceID)
+            try await waitUntil(timeout: .seconds(10)) { store.state.focusedID == workspaceID }
+            #expect(store.state.workspaces.filter(\.focused).count == 1)
+
+            try await store.rename(workspaceID, to: label + "-renamed")
+            try await waitUntil(timeout: .seconds(10)) {
+                store.state.workspace(workspaceID)?.label == label + "-renamed"
+            }
+
+            try await store.close(workspaceID)
+            try await waitUntil(timeout: .seconds(10)) { store.state.workspace(workspaceID) == nil }
+            #expect(
+                Set(store.state.workspaces.map(\.workspaceID)) == existing,
+                "closing the throwaway space leaves the session exactly as it was found"
+            )
+        } catch {
+            await closeThrowawaySpaces(in: store)
+            throw error
+        }
+    }
+
+    /// The label prefix that marks a space as this test's own. Nothing else is
+    /// ever closed.
+    private static let throwawayPrefix = "paddock-e2e-"
+
+    /// Closes leftovers and waits for herdr to confirm each close, so a
+    /// baseline taken right afterwards cannot still contain them.
+    @MainActor
+    private func closeThrowawaySpaces(in store: WorkspaceStore) async {
+        _ = try? await store.refreshFromSnapshot()
+        let leftovers = store.state.workspaces
+            .filter { $0.label.hasPrefix(Self.throwawayPrefix) }
+            .map(\.workspaceID)
+        for workspaceID in leftovers {
+            try? await store.close(workspaceID)
+        }
+        try? await waitUntil(timeout: .seconds(10)) {
+            leftovers.allSatisfy { store.state.workspace($0) == nil }
+        }
     }
 
     @MainActor

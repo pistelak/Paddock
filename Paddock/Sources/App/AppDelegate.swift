@@ -56,6 +56,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         windowController.install(MainContentViewController(
             sidebar: coordinator.sidebar,
+            spaces: coordinator.spaces,
             panes: coordinator.panes
         ))
         coordinator.window = windowController.window
