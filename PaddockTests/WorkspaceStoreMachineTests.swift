@@ -180,6 +180,30 @@ struct WorkspaceStoreMachineTests {
         #expect(await herdr.subscriptions.count == 2)
     }
 
+    /// The backoff step is stretched by the injected jitter fraction, so stores
+    /// that failed together do not come back together. The connection floor is
+    /// expired first so it cannot mask the difference: with jitter 0 this test
+    /// fails at the first assertion, with jitter 0.5 it passes.
+    @Test func theReconnectBackoffIsJittered() async throws {
+        let (herdr, store) = try await ScriptedHerdr.connectable(clock: clock, jitter: { 0.5 })
+        store.start()
+        defer { store.stop() }
+        try await waitUntil { store.connection == .live }
+        clock.advance(by: WorkspaceStore.minimumTimeBetweenConnections)
+
+        await herdr.endStreams()
+        try await waitUntil { store.connection == .reconnecting(.streamEnded) }
+        try await waitUntil { clock.pendingSleepers == 1 }
+
+        // The first backoff step is 0.5 s; with 50 % jitter the sleep is 0.75 s.
+        // `advance` wakes due sleepers synchronously, so this is exact.
+        clock.advance(by: .seconds(0.5))
+        #expect(clock.pendingSleepers == 1, "0.5 s is not enough any more")
+        clock.advance(by: .seconds(0.25))
+        try await waitUntil { store.connection == .live }
+        #expect(await herdr.requestCount(of: .ping) == 2)
+    }
+
     // MARK: - Subscriptions
 
     @Test func aRejectedPaneIsRetriedOnceAgainstAFreshSnapshot() async throws {

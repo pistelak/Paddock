@@ -118,6 +118,11 @@ final class WorkspaceStore {
 
     let transport: any HerdrTransport
     let clock: any Clock<Duration>
+    /// A fraction of the current backoff step added to each reconnect wait, so
+    /// that N stores that lost their connection at the same moment — every tab,
+    /// when herdr restarts — do not all reconnect in the same instant and hand
+    /// herdr N backlog replays at once. Injected so tests can pin it.
+    let jitter: @Sendable () -> Double
 
     private var supervisor: Task<Void, Never>?
     private var resync: Task<Void, Never>?
@@ -142,19 +147,22 @@ final class WorkspaceStore {
     /// the supervisor reads it back through the clock's own instant type.
     private var lastConnectionStart: (any InstantProtocol<Duration>)?
 
-    /// `transport` and `clock` are injectable so a test can drive the store
-    /// with a scripted herdr and a manual clock; the app passes neither and
-    /// gets the real socket client and `ContinuousClock`.
+    /// `transport`, `clock` and `jitter` are injectable so a test can drive the
+    /// store with a scripted herdr, a manual clock and a fixed jitter; the app
+    /// passes none of them and gets the real socket client, `ContinuousClock`
+    /// and up to half a step of random jitter.
     init(
         sessionName: SessionName,
         socketPath: String,
         transport: (any HerdrTransport)? = nil,
-        clock: any Clock<Duration> = ContinuousClock()
+        clock: any Clock<Duration> = ContinuousClock(),
+        jitter: @escaping @Sendable () -> Double = { Double.random(in: 0 ... 0.5) }
     ) {
         self.sessionName = sessionName
         self.socketPath = socketPath
         self.transport = transport ?? HerdrSocketClient(socketPath: socketPath)
         self.clock = clock
+        self.jitter = jitter
     }
 
     // MARK: - Lifecycle
@@ -452,8 +460,9 @@ extension WorkspaceStore {
             }
             guard !Task.isCancelled else { return }
             // Not `try?`: swallowing cancellation here would keep a stopped
-            // store reconnecting.
-            do { try await clock.sleep(for: .seconds(backoff.next())) } catch { return }
+            // store reconnecting. Jittered, so stores that failed together do
+            // not come back together.
+            do { try await clock.sleep(for: .seconds(backoff.next() * (1 + jitter()))) } catch { return }
         }
     }
 
@@ -604,6 +613,11 @@ extension WorkspaceStore {
     /// A value type with no clock of its own so the sequence is testable
     /// without waiting for it. `reset()` runs after every successful snapshot,
     /// so a session that flaps recovers as fast as one that never failed.
+    ///
+    /// The schedule is exact here and jittered where it is slept
+    /// (`supervise()`): identical schedules on N stores would make N
+    /// reconnects — and N backlog replays for herdr — land in the same instant
+    /// after a herdr restart.
     struct Backoff: Equatable, Sendable {
         static let first = 0.5
         static let cap = 5.0

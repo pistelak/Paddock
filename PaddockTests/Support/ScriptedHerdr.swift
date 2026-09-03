@@ -231,7 +231,11 @@ extension ScriptedHerdr {
     }
 
     /// The store scripted to connect cleanly: pong, accept, one workspace.
-    static func connectable(clock: ManualClock) async throws -> (ScriptedHerdr, WorkspaceStore) {
+    /// No jitter unless asked, so a test's clock advances stay exact.
+    static func connectable(
+        clock: ManualClock,
+        jitter: @escaping @Sendable () -> Double = { 0 }
+    ) async throws -> (ScriptedHerdr, WorkspaceStore) {
         let herdr = ScriptedHerdr()
         await herdr.alwaysReply(to: .ping, with: pong)
         await herdr.alwaysReply(to: .sessionSnapshot, with: snapshot(workspaces: [("w1", 1, "code", true)]))
@@ -239,7 +243,8 @@ extension ScriptedHerdr {
             sessionName: try SessionName("scripted"),
             socketPath: "/nonexistent/scripted.sock",
             transport: herdr,
-            clock: clock
+            clock: clock,
+            jitter: jitter
         )
         return (herdr, store)
     }
