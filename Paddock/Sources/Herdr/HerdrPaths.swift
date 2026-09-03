@@ -2,7 +2,7 @@ import Foundation
 
 /// Where a session's API socket lives when `herdr session list` has not named
 /// it. A tab may point at a session herdr has never created, and the spaces
-/// column still needs an address to try — it starts answering the moment the
+/// store still needs an address to try — it starts answering the moment the
 /// surface brings the session up.
 ///
 /// Mirrors herdr's own layout: the `default` session owns the config directory

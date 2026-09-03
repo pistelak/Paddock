@@ -6,8 +6,8 @@ import AppKit
 /// not in the shared store.
 ///
 /// Everything that is a dialog or a menu of its own has moved out:
-/// `SpaceCommands` (rename/close/create a space), `AddSessionMenu`, and
-/// `WindowTitle`. Every running `WorkspaceStore` belongs to `registry`.
+/// `AddSessionMenu` and `WindowTitle`. Every running `WorkspaceStore` — one per
+/// session, the source of the tiles' indicators — belongs to `registry`.
 @MainActor
 final class TabCoordinator {
     private static let selectedTabKey = "selectedTabID"
@@ -17,7 +17,6 @@ final class TabCoordinator {
     let herdrExecutable: URL
     let herdr: HerdrCLI
     let sidebar = SidebarViewController()
-    let spaces = WorkspaceColumnViewController()
     let panes = PaneContainerViewController()
     weak var window: NSWindow?
 
@@ -50,7 +49,7 @@ final class TabCoordinator {
 
     func start() {
         store.onChange = { [weak self] in self?.refreshPresentation() }
-        // Any store's rows or status moved: the tile badges may have too.
+        // Any store's state moved: the tile indicators may have too.
         registry.onChange = { [weak self] _ in self?.refreshPresentation() }
         store.onSaveFailure = { [weak self] error in
             Task { await AlertPresenter.present(error, in: self?.window) }
@@ -58,13 +57,6 @@ final class TabCoordinator {
         sidebar.onAction = { [weak self] action, id in self?.handle(action, tabID: id) }
         sidebar.onAdd = { [weak self] anchor in
             Task { await self?.showAddMenu(from: anchor) }
-        }
-        spaces.onAction = { [weak self] action, id in self?.handle(action, workspaceID: id) }
-        spaces.onCreate = { [weak self] _ in
-            Task {
-                guard let self, let workspaces = self.selectedWorkspaceStore else { return }
-                await self.spaceCommands.create(in: workspaces)
-            }
         }
 
         Task { [weak self] in await self?.refreshKnownSessions() }
@@ -89,7 +81,7 @@ final class TabCoordinator {
         setSelectedTab(tab.id)
         // Before the pane, so the store exists when its surface attaches and
         // asks for an immediate retry.
-        spaces.bind(registry.store(for: tab))
+        _ = registry.store(for: tab)
         panes.select(tab) { [self] in makePane(for: tab) }
         refreshPresentation()
     }
@@ -100,7 +92,7 @@ final class TabCoordinator {
     }
 
     /// Puts the keyboard into the selected tab's pane — after a layout change,
-    /// or after a space was focused from the column.
+    /// or after the strip was shown or hidden.
     func focusSelectedPane() {
         guard let selectedTabID else { return }
         panes.focusPane(selectedTabID)
@@ -156,16 +148,15 @@ final class TabCoordinator {
         cache(sessions)
     }
 
-    /// Hands the list to the registry. A replaced store that was on screen is
-    /// rebound so the column follows the new one; and because a replaced store
-    /// took its badge with it, the tiles are redrawn whenever anything was
-    /// replaced — a background tab must not keep showing a status nobody is
-    /// tracking any more.
+    /// Hands the list to the registry. A replaced store took its indicator with
+    /// it, so the tiles are redrawn whenever anything was replaced — a tab must
+    /// not keep showing a status nobody is tracking any more — and the selected
+    /// tab's store is recreated at once so its indicator comes straight back.
     private func cache(_ sessions: [HerdrSession]) {
         let replaced = registry.update(knownSessions: sessions)
         guard !replaced.isEmpty else { return }
         if let selectedTabID, replaced.contains(selectedTabID), let tab = store.tab(withID: selectedTabID) {
-            spaces.bind(registry.store(for: tab))
+            _ = registry.store(for: tab)
         }
         refreshPresentation()
     }
@@ -210,7 +201,6 @@ final class TabCoordinator {
             select(next)
         } else {
             setSelectedTab(nil)
-            spaces.bind(nil)
             refreshPresentation()
         }
     }
@@ -228,45 +218,6 @@ final class TabCoordinator {
             try await herdr.stopSession(tab.sessionName)
         } catch {
             await AlertPresenter.present(error, in: window)
-        }
-    }
-
-    // MARK: - Space actions
-    //
-    // Every one of these runs against the *selected* tab's store, because that
-    // is the store the column is bound to and the only one whose rows the user
-    // can click.
-
-    private var selectedWorkspaceStore: WorkspaceStore? {
-        selectedTabID.flatMap(registry.existingStore(for:))
-    }
-
-    private var spaceCommands: SpaceCommands {
-        SpaceCommands(window: window)
-    }
-
-    private func handle(_ action: WorkspaceAction, workspaceID: WorkspaceID) {
-        guard let workspaces = selectedWorkspaceStore else { return }
-        switch action {
-        case .focus:
-            Task {
-                do {
-                    try await workspaces.focus(workspaceID)
-                    // The click landed in the column; the keyboard belongs to
-                    // the terminal that just changed space — unless the user
-                    // has moved to another tab meanwhile, whose pane and
-                    // column must not react to a stale completion.
-                    guard selectedWorkspaceStore === workspaces else { return }
-                    focusSelectedPane()
-                } catch {
-                    guard selectedWorkspaceStore === workspaces else { return }
-                    spaces.showTransientError(error.localizedDescription)
-                }
-            }
-        case .rename:
-            Task { await spaceCommands.rename(workspaceID, in: workspaces) }
-        case .close:
-            Task { await spaceCommands.close(workspaceID, in: workspaces) }
         }
     }
 

@@ -2,9 +2,9 @@ import Foundation
 import Testing
 @testable import Paddock
 
-/// The failure modes the column has to survive, against a real herdr:
+/// The failure modes a session's store has to survive, against a real herdr:
 /// a session that stops under it, a stale socket file left behind, several
-/// sessions live at once, and the bind/unbind churn of fast tab switching.
+/// sessions live at once.
 ///
 /// Disabled unless `PADDOCK_LIVE_HERDR=1`, like the other live suites; see
 /// `WorkspaceStoreLiveTests` for the `.xctestrun` recipe.
@@ -50,11 +50,11 @@ struct WorkspaceStoreHardeningLiveTests {
         )
     }
 
-    // MARK: - A session that stops under the column
+    // MARK: - A session that stops while watched
 
-    /// `herdr session stop` while the column is showing that session: the
-    /// footer has to say "Session not running", the rows have to stay (the
-    /// column draws them dimmed rather than emptying), and a session that
+    /// `herdr session stop` while a store is watching that session: the
+    /// connection has to read "session not running", the last state has to
+    /// stay (so a tile can keep, and later dim, its indicator), and a session that
     /// comes back has to repopulate them without the store being recreated.
     ///
     /// This is also the stale-socket case: herdr leaves the socket *file*
@@ -83,7 +83,7 @@ struct WorkspaceStoreHardeningLiveTests {
             )
             #expect(
                 store.state.workspaces == rowsWhileLive,
-                "a stopped session keeps its last rows; the column dims them instead of clearing"
+                "a stopped session keeps its last state; the tile dims instead of clearing"
             )
 
             try await startQASession(ownership)
@@ -121,7 +121,7 @@ struct WorkspaceStoreHardeningLiveTests {
 
     // MARK: - Several sessions at once
 
-    /// Three columns' worth of stores running side by side, which is what
+    /// Three sessions' stores running side by side, which is what
     /// three visited tabs leave behind. Each one has to reach its own session.
     @Test func threeSessionsAreLiveAtTheSameTime() async throws {
         try await withQASession { _ in
@@ -143,49 +143,6 @@ struct WorkspaceStoreHardeningLiveTests {
                     #expect(ids.isDisjoint(with: otherIDs), "two stores share workspace ids")
                 }
             }
-        }
-    }
-
-    // MARK: - Tab-switching churn
-
-    /// Twenty rounds of what fast tile clicking does: bind the column to one
-    /// store, then the other, over and over. Nothing may crash, and — the
-    /// point of the test — no descriptor may be left behind, which is how a
-    /// second events connection per store would show up.
-    @Test func rapidRebindingLeaksNoDescriptors() async throws {
-        try await withQASession { _ in
-            let sessions = try await liveSessionNames(atLeast: 2)
-            let stores = sessions.prefix(2).map {
-                WorkspaceStore(sessionName: $0, socketPath: HerdrPaths.socketPath(for: $0))
-            }
-            for store in stores { store.start() }
-            defer { for store in stores { store.stop() } }
-            try await waitUntil(timeout: .seconds(30)) {
-                stores.allSatisfy(\.connection.isConnected)
-            }
-
-            let column = WorkspaceColumnViewController()
-            column.loadViewIfNeeded()
-            let baseline = Self.openDescriptorCount()
-
-            for round in 0 ..< 20 {
-                column.bind(stores[round % stores.count])
-                // Long enough for a mistaken teardown to open a new connection,
-                // short enough that twenty rounds stay inside a second.
-                try await Task.sleep(for: .milliseconds(30))
-            }
-            column.bind(nil)
-            try await Task.sleep(for: .seconds(1))
-
-            // A store may be a moment into a reconnect when the churn stops —
-            // herdr's own pane changes reopen the events connection — so what is
-            // asserted is that both stores come *back*, not that neither blinked.
-            try await waitUntil(timeout: .seconds(20)) { stores.allSatisfy(\.connection.isConnected) }
-            let after = Self.openDescriptorCount()
-            #expect(
-                after <= baseline + 2,
-                "binding a column must not open connections: \(baseline) descriptors before, \(after) after"
-            )
         }
     }
 
@@ -219,7 +176,7 @@ struct WorkspaceStoreHardeningLiveTests {
     /// A session that is already up is left alone, but it still goes through
     /// `ensureQASpace()`: the restart in the middle of
     /// `aSessionThatStopsKeepsItsRowsAndComesBack` comes back through here and
-    /// has to find rows again.
+    /// has to find its spaces again.
     private func startQASession(_ ownership: Ownership) async throws {
         if try await isRunning(qaSession) {
             try await ensureQASpace()
@@ -248,7 +205,7 @@ struct WorkspaceStoreHardeningLiveTests {
     /// against herdr 0.8.0: the same `server` command started with that
     /// variable set snapshots `workspaces: [w1]`, and without it
     /// `workspaces: []`). So the session this suite starts comes up connected,
-    /// live and *empty*, and every assertion about rows or focus needs a space
+    /// live and *empty*, and every assertion about spaces or focus needs a space
     /// created by hand first.
     ///
     /// herdr persists the space, so the restart inside a test finds it again
@@ -264,7 +221,7 @@ struct WorkspaceStoreHardeningLiveTests {
         guard existing.workspaces.isEmpty else { return }
         try await client.send(
             .workspaceCreate,
-            params: WorkspaceCreateParams(label: qaSession.rawValue, focus: true)
+            params: CreateWorkspaceParams(label: qaSession.rawValue, focus: true)
         )
         try await waitUntil(timeout: .seconds(10)) {
             let list = try? await client.request(.workspaceList) as WorkspaceListResult
@@ -314,13 +271,6 @@ struct WorkspaceStoreHardeningLiveTests {
         return Array(ordered.prefix(count))
     }
 
-    /// How many descriptors this process holds. Scanning the table with
-    /// `F_GETFD` needs no `lsof` and no entitlements, and the number only has
-    /// to be comparable with itself.
-    private static func openDescriptorCount() -> Int {
-        (0 ..< getdtablesize()).lazy.filter { fcntl($0, F_GETFD) != -1 }.count
-    }
-
     private func waitUntil(
         timeout: Duration,
         sourceLocation: SourceLocation = #_sourceLocation,
@@ -333,4 +283,11 @@ struct WorkspaceStoreHardeningLiveTests {
         }
         Issue.record("condition not met within \(timeout)", sourceLocation: sourceLocation)
     }
+}
+
+/// `workspace.create`'s params, kept by the test alone: Paddock no longer
+/// creates workspaces itself, but the QA session needs one to have any state.
+private struct CreateWorkspaceParams: Encodable {
+    let label: String
+    let focus: Bool
 }

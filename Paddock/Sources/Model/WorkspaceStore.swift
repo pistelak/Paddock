@@ -1,7 +1,7 @@
 import Foundation
 
-/// The live spaces list of one herdr session: what the column draws, plus the
-/// connection that keeps it current.
+/// The live spaces list of one herdr session — what the session tile's
+/// indicator is derived from — plus the connection that keeps it current.
 ///
 /// Everything the UI needs is two `private(set)` properties and `observe`:
 /// read `state` and `connection`, re-render when told. Notifications are
@@ -13,8 +13,8 @@ import Foundation
 /// the events connection, take a `session.snapshot`, then let the stream drive
 /// further snapshots until it ends. A dead session is not an error state to
 /// recover from by hand — it is just a longer wait between attempts — so
-/// `state` is never cleared on failure and the column keeps drawing the last
-/// known rows dimmed.
+/// `state` is never cleared on failure, so whatever draws it keeps the last
+/// known state (the tile dims it: PR B).
 ///
 /// **`session.snapshot` is the only source of state.** No event is ever applied
 /// to `state`; events only say *something may have moved* and the store
@@ -23,9 +23,9 @@ import Foundation
 /// (measured 2026-09-02 on the `default` session: 89 `workspace_focused` events
 /// over 9.1 s), with nothing in the protocol — no cursor, no `seq`, no
 /// timestamp, no opt-out — to tell a replayed event from a live one. Replayed
-/// content is *stale*, so applying it drags the rows back through the session's
-/// history; that is what walked the focused pill across the column for ten
-/// seconds after every connect. Refetching instead is bounded work
+/// content is *stale*, so applying it drags the state back through the session's
+/// history; that is what walked the focused pill across the (since removed)
+/// spaces column for ten seconds after every connect. Refetching instead is bounded work
 /// (`minimumSnapshotInterval`) and always lands on the present.
 ///
 /// **Everything that waits, waits on `clock`.** The reconnect backoff, the
@@ -42,7 +42,7 @@ import Foundation
 /// `stop()`, so that cannot happen by accident.
 @MainActor
 final class WorkspaceStore {
-    /// What the footer says, and whether the rows are stale.
+    /// What the tile's tooltip says (PR B), and whether the state is stale.
     ///
     /// `unsupportedProtocol` is deliberately a *connected* state: the shapes
     /// Paddock reads are a small, stable subset, so a herdr speaking another
@@ -52,14 +52,14 @@ final class WorkspaceStore {
         case idle
         case connecting
         case live
-        /// Keep the last rows, draw them dimmed, retry on the backoff.
+        /// Keep the last state (the tile draws it dimmed: PR B), retry on the backoff.
         case reconnecting(ReconnectReason)
         /// No socket at the path: the session has not been started yet.
         case sessionNotRunning
         /// Connected and usable, but `ping` reported another protocol version.
         case unsupportedProtocol(Int)
 
-        /// Whether rows are being kept current right now.
+        /// Whether the state is being kept current right now.
         var isConnected: Bool {
             switch self {
             case .live, .unsupportedProtocol: true
@@ -69,8 +69,8 @@ final class WorkspaceStore {
     }
 
     /// Why a connection is being retried. A model value, not a sentence: the
-    /// footer (`ConnectionFooter`) turns it into words, tests compare cases,
-    /// and a later UI can tell a timeout from a rejected request.
+    /// tile's tooltip (PR B) turns it into words, tests compare cases, and a
+    /// later UI can tell a timeout from a rejected request.
     enum ReconnectReason: Equatable, Sendable {
         /// herdr closed the socket — the session stopped or the daemon
         /// restarted. Not a fault.
@@ -86,7 +86,7 @@ final class WorkspaceStore {
     /// stream is still up, and the pause between them. The last failure ends
     /// the connection: the supervisor reports `.reconnecting` and tries again
     /// on the backoff, so a herdr that answers events but not snapshots can
-    /// never leave stale rows on screen under a footer that says nothing.
+    /// never leave a stale state behind a connection that claims to be live.
     static let maximumSnapshotFailures = 3
     static let snapshotFailurePause: Duration = .seconds(1)
 
@@ -94,7 +94,7 @@ final class WorkspaceStore {
     /// is also the window a burst of events coalesces in.
     ///
     /// Leading-edge: the first event after a quiet spell refetches straight
-    /// away, so the pill follows a click or a `herdr workspace focus` within
+    /// away, so the indicator follows a change in herdr within
     /// about ten milliseconds. Everything that arrives while that snapshot is
     /// in flight, or inside the floor behind it, folds into one trailing
     /// refetch — *guaranteed*, even if no further event ever comes, which is
@@ -126,7 +126,7 @@ final class WorkspaceStore {
     /// Gates every mutation. A cancelled supervisor is not stopped the instant
     /// `stop()` returns — it is still unwinding somewhere between two awaits —
     /// and without this flag its last write would put the store back into
-    /// `.reconnecting` and fire an `onChange` after the column let go of it.
+    /// `.reconnecting` and notify observers after the registry let go of it.
     private var isRunning = false
 
     // Supervisor state. Private: the connection loop lives in this file, and
@@ -168,7 +168,7 @@ final class WorkspaceStore {
     /// Cancels every task the store owns and goes back to `.idle`.
     ///
     /// `state` survives, so a stopped store that is started again still has
-    /// rows to draw while it reconnects. No observer is called after this
+    /// state to show while it reconnects. No observer is called after this
     /// returns: the coalescing task is cancelled with the rest. Observers
     /// themselves survive, so a store that is started again is still watched.
     func stop() {
@@ -210,34 +210,9 @@ final class WorkspaceStore {
         }
     }
 
-    // MARK: - Mutations
-    //
-    // Every mutation is a request on a connection of its own and its result is
-    // discarded: the column updates when the `workspace_*` event it causes
-    // comes back down the stream, so a click and a change made in the TUI take
-    // exactly the same path. Errors are rethrown for the caller to show.
-
-    func focus(_ workspaceID: WorkspaceID) async throws {
-        try await transport.send(.workspaceFocus, params: WorkspaceTargetParams(workspaceID))
-    }
-
-    /// Creates a space and moves herdr to it, so the TUI and the column agree
-    /// about where the user is.
-    func create(label: String?) async throws {
-        try await transport.send(.workspaceCreate, params: WorkspaceCreateParams(label: label, focus: true))
-    }
-
-    func rename(_ workspaceID: WorkspaceID, to label: String) async throws {
-        try await transport.send(.workspaceRename, params: WorkspaceRenameParams(workspaceID: workspaceID, label: label))
-    }
-
-    func close(_ workspaceID: WorkspaceID) async throws {
-        try await transport.send(.workspaceClose, params: WorkspaceTargetParams(workspaceID))
-    }
-
     // MARK: - State
 
-    /// Replaces the rows wholesale from an authoritative snapshot.
+    /// Replaces the state wholesale from an authoritative snapshot.
     ///
     /// `session.snapshot` rather than `workspace.list` because it carries the
     /// panes too, and the panes are the only source of live agent status —
@@ -321,8 +296,8 @@ final class WorkspaceStore {
     ///
     /// **A snapshot that keeps failing ends the connection.** After
     /// `maximumSnapshotFailures` in a row the store reports `.reconnecting`
-    /// and restarts, instead of going quiet while the footer still says live:
-    /// the stream may well be healthy, but rows nobody can refresh are stale,
+    /// and restarts, instead of going quiet while `connection` still reads live:
+    /// the stream may well be healthy, but a state nobody can refresh is stale,
     /// and a reconnect is the one thing that always ends in a snapshot.
     private func pumpSnapshots() async {
         defer { resync = nil }
@@ -420,7 +395,7 @@ final class WorkspaceStore {
 
 /// The supervising loop: one attempt at a time, for ever, with a backoff
 /// between failures. Split from the store's public surface because none of it
-/// is anybody else's business — the column only ever reads `state` and
+/// is anybody else's business — the UI only ever reads `state` and
 /// `connection`.
 extension WorkspaceStore {
     /// Above this many reconnects in a row without a single event in between,
@@ -511,7 +486,7 @@ extension WorkspaceStore {
     /// Events that arrive while the snapshot is in flight are not lost and not
     /// a problem either: the stream buffers them, and reading one afterwards
     /// only asks for another snapshot — one request, and it cannot regress the
-    /// rows, because no event is ever applied. That is the whole reason herdr's
+    /// state, because no event is ever applied. That is the whole reason herdr's
     /// unmarked, stale backlog replay is harmless here; see
     /// `WorkspaceEventPolicy`.
     private func runOneConnection() async throws -> SessionOutcome {
@@ -552,7 +527,7 @@ extension WorkspaceStore {
     /// snapshot was awaited, then the loop reads events and hands each to
     /// `handle(_:)`, which asks the resync pump for a snapshot. A quiet
     /// session parks in `next()` for ever, which is fine — `connection` and
-    /// the rows were both settled by the snapshot before the loop started, and
+    /// the state were both settled by the snapshot before the loop started, and
     /// the subscription list is re-checked by every resync, not by this loop.
     private func follow(_ opened: OpenedEvents) async throws -> SessionOutcome {
         for try await kind in opened.stream {
@@ -594,7 +569,7 @@ extension WorkspaceStore {
     // MARK: - Pure helpers
 
     /// Everything one session has to listen to: the workspace kinds that keep
-    /// the rows right, the global pane kinds that say the pane set moved, and
+    /// the spaces right, the global pane kinds that say the pane set moved, and
     /// one `pane.agent_status_changed` per pane — the only place agent status
     /// ever arrives.
     ///
@@ -609,9 +584,9 @@ extension WorkspaceStore {
     /// What a failed attempt means.
     ///
     /// A missing socket is the ordinary case, not a fault: the session simply
-    /// has not been started, and it gets its own state so the column can say
-    /// so instead of showing a POSIX message. Everything else is a reconnect
-    /// that remembers *why*, as a value the footer renders and tests compare.
+    /// has not been started, and it gets its own state so the UI can say so
+    /// instead of showing a POSIX message. Everything else is a reconnect that
+    /// remembers *why*, as a value tests compare and the tile tooltip (PR B) renders.
     nonisolated static func connectionState(for error: Error) -> ConnectionState {
         guard let paddock = error as? PaddockError else {
             return .reconnecting(.unexpected(

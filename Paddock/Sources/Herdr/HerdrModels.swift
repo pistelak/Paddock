@@ -52,13 +52,13 @@ struct WorkspaceWorktreeInfo: Codable, Hashable, Sendable {
     }
 }
 
-/// A herdr workspace — what Paddock's column calls a "space".
+/// A herdr workspace — what Paddock calls a "space".
 ///
 /// The same shape arrives from `workspace.list`, `session.snapshot` and the
 /// `workspace_*` events, so it is decoded once here and used everywhere.
 ///
 /// `workspaceID`, `number`, `label`, `focused` and `agentStatus` are what a
-/// row draws, so they are required. `paneCount`, `tabCount` and `activeTabID`
+/// indicator needs, so they are required. `paneCount`, `tabCount` and `activeTabID`
 /// are kept for completeness but nothing reads them, so they are optional.
 struct WorkspaceInfo: Codable, Hashable, Sendable, Identifiable {
     var id: WorkspaceID { workspaceID }
@@ -112,7 +112,7 @@ struct WorkspaceInfo: Codable, Hashable, Sendable, Identifiable {
     }
 }
 
-/// A pane, reduced to what the column needs: which workspace it belongs to,
+/// A pane, reduced to what the indicator needs: which workspace it belongs to,
 /// which agent runs in it and how that agent is doing. Panes matter in phase 1
 /// only because `pane.agent_status_changed` has to be subscribed per pane;
 /// the geometry, scroll and terminal fields herdr also sends are ignored.
@@ -193,7 +193,7 @@ struct PingResult: Decodable, Sendable {
 /// `SessionSnapshotResult` from the response and take its `snapshot`.
 ///
 /// herdr also sends `tabs`, `layouts`, `agents`, `focused_tab_id` and
-/// `focused_pane_id`; the column does not use them, so they are not modelled.
+/// `focused_pane_id`; nothing uses them, so they are not modelled.
 /// `version` and `protocolVersion` are informational only (`ping` is where the
 /// protocol check happens), so they are optional too.
 struct SessionSnapshot: Decodable, Hashable, Sendable {
@@ -233,9 +233,4 @@ struct SessionSnapshotResult: Decodable, Sendable {
 /// `result` of `workspace.list`.
 struct WorkspaceListResult: Decodable, Sendable {
     let workspaces: [WorkspaceInfo]
-}
-
-/// `result` of `pane.list`.
-struct PaneListResult: Decodable, Sendable {
-    let panes: [PaneInfo]
 }

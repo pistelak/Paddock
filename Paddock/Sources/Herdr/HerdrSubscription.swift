@@ -54,8 +54,8 @@ enum HerdrSubscription: Encodable, Hashable, Sendable {
         HerdrEventKind(wire: type)
     }
 
-    /// Every workspace kind, in schema order: the set the column subscribes to
-    /// to keep its rows current.
+    /// Every workspace kind, in schema order: the set a store subscribes to
+    /// to keep its spaces current.
     static let workspaceKinds: [HerdrSubscription] = [
         .workspaceCreated,
         .workspaceUpdated,

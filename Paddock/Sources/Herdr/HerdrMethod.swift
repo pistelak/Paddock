@@ -18,10 +18,8 @@ struct HerdrMethod: RawRepresentable, Hashable, Sendable, Codable, CustomStringC
     static let ping = HerdrMethod(rawValue: "ping")
     static let sessionSnapshot = HerdrMethod(rawValue: "session.snapshot")
     static let workspaceList = HerdrMethod(rawValue: "workspace.list")
-    static let workspaceFocus = HerdrMethod(rawValue: "workspace.focus")
+    /// Only the QA live test creates workspaces; Paddock itself never mutates one.
     static let workspaceCreate = HerdrMethod(rawValue: "workspace.create")
-    static let workspaceRename = HerdrMethod(rawValue: "workspace.rename")
-    static let workspaceClose = HerdrMethod(rawValue: "workspace.close")
     static let eventsSubscribe = HerdrMethod(rawValue: "events.subscribe")
 
     var description: String { rawValue }

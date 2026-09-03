@@ -21,7 +21,7 @@ import Testing
 ///         -only-testing:PaddockTests/WorkspaceStoreLiveTests
 ///
 /// `PADDOCK_LIVE_HERDR_SOCKET` picks the session; it defaults to `work`.
-/// Everything here is read-only except `aThrowawaySpaceSurvivesEveryMutation`,
+/// Everything here is read-only: nothing in this suite mutates the session.
 /// which creates a space of its own and only ever focuses, renames and closes
 /// *that* one — no space the user made is touched.
 @Suite(.enabled(if: ProcessInfo.processInfo.environment["PADDOCK_LIVE_HERDR"] == "1"))
@@ -30,7 +30,7 @@ struct WorkspaceStoreLiveTests {
         ?? NSHomeDirectory() + "/.config/herdr/sessions/work/herdr.sock"
 
     /// The whole connect path in one test: ping, subscribe, snapshot, then the
-    /// backlog replay reduced into rows — and a `stop()` that really stops.
+    /// backlog replay reduced into one state — and a `stop()` that really stops.
     @MainActor
     @Test func theStoreGoesLiveAndFillsItsRows() async throws {
         let store = WorkspaceStore(sessionName: try SessionName("work"), socketPath: socketPath)
@@ -57,7 +57,7 @@ struct WorkspaceStoreLiveTests {
         )
 
         // The backlog replay alone is dozens of events; coalescing means the
-        // column repaints a handful of times, not once per event.
+        // tile repaints a handful of times, not once per event.
         #expect(notifications > 0)
         #expect(notifications < 40, "notifications are coalesced, \(notifications) is too many")
 
@@ -66,7 +66,7 @@ struct WorkspaceStoreLiveTests {
         let afterStop = notifications
         try await Task.sleep(for: .seconds(1))
         #expect(notifications == afterStop, "no observer may be called after stop()")
-        // The rows survive a stop so a reselected tab has something to draw.
+        // The state survives a stop so a restarted store has something to show.
         #expect(!store.state.workspaces.isEmpty)
     }
 
@@ -86,79 +86,6 @@ struct WorkspaceStoreLiveTests {
         store.stop()
     }
 
-    /// The four mutations the coordinator wires to the column, against a real
-    /// herdr, on a space this test creates for the purpose: create, focus,
-    /// rename, close. Each one is verified the way the column sees it — by
-    /// waiting for the `workspace_*` event to come back down the stream and
-    /// change `state` — because that round trip *is* the contract: the store
-    /// never applies a mutation to its own rows.
-    @MainActor
-    @Test func aThrowawaySpaceSurvivesEveryMutation() async throws {
-        let store = WorkspaceStore(sessionName: try SessionName("work"), socketPath: socketPath)
-        store.start()
-        defer { store.stop() }
-        try await waitUntil(timeout: .seconds(20)) {
-            store.connection.isConnected && !store.state.workspaces.isEmpty
-        }
-
-        // Anything an interrupted earlier run left behind goes first, so a
-        // live session never accumulates junk.
-        await closeThrowawaySpaces(in: store)
-
-        let label = Self.throwawayPrefix + String(UInt32.random(in: 0 ... .max))
-        let existing = Set(store.state.workspaces.map(\.id))
-        try await store.create(label: label)
-
-        do {
-            try await waitUntil(timeout: .seconds(10)) {
-                store.state.workspaces.contains { !existing.contains($0.id) && $0.label == label }
-            }
-            let workspaceID = try #require(
-                store.state.workspaces.first { !existing.contains($0.id) && $0.label == label }
-            ).id
-
-            // `create` asks for focus, so the pill has already moved; calling
-            // `focus` again is exactly what a row click does and has to be
-            // idempotent.
-            try await store.focus(workspaceID)
-            try await waitUntil(timeout: .seconds(10)) { store.state.focusedID == workspaceID }
-
-            try await store.rename(workspaceID, to: label + "-renamed")
-            try await waitUntil(timeout: .seconds(10)) {
-                store.state.workspace(workspaceID)?.label == label + "-renamed"
-            }
-
-            try await store.close(workspaceID)
-            try await waitUntil(timeout: .seconds(10)) { store.state.workspace(workspaceID) == nil }
-            #expect(
-                Set(store.state.workspaces.map(\.id)) == existing,
-                "closing the throwaway space leaves the session exactly as it was found"
-            )
-        } catch {
-            await closeThrowawaySpaces(in: store)
-            throw error
-        }
-    }
-
-    /// The label prefix that marks a space as this test's own. Nothing else is
-    /// ever closed.
-    private static let throwawayPrefix = "paddock-e2e-"
-
-    /// Closes leftovers and waits for herdr to confirm each close, so a
-    /// baseline taken right afterwards cannot still contain them.
-    @MainActor
-    private func closeThrowawaySpaces(in store: WorkspaceStore) async {
-        _ = try? await store.refreshFromSnapshot()
-        let leftovers = store.state.workspaces
-            .filter { $0.label.hasPrefix(Self.throwawayPrefix) }
-            .map(\.id)
-        for workspaceID in leftovers {
-            try? await store.close(workspaceID)
-        }
-        try? await waitUntil(timeout: .seconds(10)) {
-            leftovers.allSatisfy { store.state.workspace($0) == nil }
-        }
-    }
 
     @MainActor
     private func waitUntil(

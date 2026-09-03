@@ -1,8 +1,7 @@
 import AppKit
 
 extension AgentStatus {
-    /// The dot colour for a status, shared by the space rows and the tile
-    /// badge so the two never disagree about what "blocked" looks like.
+    /// The dot colour for a status on the tile badge.
     var dotColor: NSColor {
         switch self {
         case .idle: .tertiaryLabelColor

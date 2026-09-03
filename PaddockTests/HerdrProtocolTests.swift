@@ -385,7 +385,7 @@ struct HerdrProtocolTests {
 
     /// The reason the hot path decodes kinds and not payloads: a known kind
     /// whose payload herdr has reshaped must still reach the store, or the
-    /// column would silently stop updating while the footer said "live".
+    /// indicator would silently stop updating while the connection read "live".
     @Test(arguments: [
         #"{"event":"workspace_renamed","data":{"type":"workspace_renamed","workspace_id":"w4"}}"#,
         #"{"event":"workspace_created","data":{"type":"workspace_created","space":{"workspace_id":"w4"}}}"#,

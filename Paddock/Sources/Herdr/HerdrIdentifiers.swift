@@ -6,8 +6,7 @@ import Foundation
 /// other's APIs — the two are spelled identically on the wire (`"w4"` and
 /// `"w4:p1"`) and both used to travel as `String` from the socket to the
 /// outline view's item cache. Non-empty by construction: decoding `""` fails,
-/// and there is no way to write the sentinel id the column once used as a
-/// placeholder. `SessionName` is the same idea with a stricter alphabet.
+/// and there is no way to write an id that names nothing. `SessionName` is the same idea with a stricter alphabet.
 ///
 /// String literals are accepted so fixtures read as `"w4"`; a literal is a
 /// compile-time constant, which is not the mistake this type exists to catch.

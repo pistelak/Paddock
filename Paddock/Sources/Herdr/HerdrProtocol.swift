@@ -92,3 +92,14 @@ struct HerdrResponse: Sendable {
         let result: R
     }
 }
+
+/// The result of a method whose payload nothing reads.
+///
+/// Every one of herdr's result shapes is an object tagged with a `type`
+/// (`ok`, `workspace_info`, `workspace_created`, …). Decoding just the tag
+/// keeps a mutation from failing because herdr enriched a reply Paddock
+/// ignores. Even the tag is optional, so that a method whose result shape
+/// changes can never make a request that actually worked look like a failure.
+struct HerdrResultTag: Decodable, Sendable {
+    let type: String?
+}

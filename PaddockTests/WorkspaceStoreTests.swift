@@ -3,7 +3,7 @@ import Testing
 @testable import Paddock
 
 /// Covers the parts of the store that are pure: the subscription list it
-/// builds from a state, the reconnect schedule and the error-to-footer
+/// builds from a state, the reconnect schedule and the error-to-connection-state
 /// mapping. The connection machine itself is driven through every transition
 /// in `WorkspaceStoreMachineTests` with a scripted transport and a manual
 /// clock; the socket is exercised by `WorkspaceStoreLiveTests` against a real
@@ -11,7 +11,7 @@ import Testing
 ///
 /// The one behavioural test here needs no herdr: a socket path that does not
 /// exist fails immediately with `ENOENT`, which is exactly the "session not
-/// running" path the column has to draw.
+/// running" state a tile will show.
 struct WorkspaceStoreTests {
     // MARK: - Fixtures
 
@@ -182,7 +182,7 @@ struct WorkspaceStoreTests {
         store.start() // idempotent: a second call must not open a second loop
         try await waitUntil { store.connection == .sessionNotRunning }
 
-        #expect(notifications > 0, "the footer has to hear about the failure")
+        #expect(notifications > 0, "observers have to hear about the failure")
         #expect(store.state.workspaces.isEmpty)
 
         store.stop()

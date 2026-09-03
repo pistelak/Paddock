@@ -18,12 +18,12 @@ extension AgentStatus {
     }
 }
 
-/// One space as the column knows it: the part of a `WorkspaceInfo` that a row
-/// draws, and nothing that only the wire cares about.
+/// One space as Paddock knows it: the part of a `WorkspaceInfo` the indicator
+/// is derived from, and nothing that only the wire cares about.
 ///
 /// Deliberately without a `focused` flag. Which space is focused is one fact
-/// about the *list*, so it is stored once on `WorkspaceListState` and a row
-/// asks `state.focusedID == id`; a flag per row could only ever disagree
+/// about the *list*, so it is stored once on `WorkspaceListState` and anyone
+/// asks `state.focusedID == id`; a flag per space could only ever disagree
 /// with it.
 struct Workspace: Hashable, Sendable, Identifiable {
     let id: WorkspaceID
@@ -43,7 +43,7 @@ struct Workspace: Hashable, Sendable, Identifiable {
     }
 }
 
-/// The part of a pane the spaces column needs.
+/// The part of a pane the indicator needs.
 ///
 /// Panes are tracked at all because agent status only ever arrives through the
 /// per-pane `pane.agent_status_changed` subscription (the spike found that
@@ -68,7 +68,7 @@ struct PaneSummary: Equatable, Hashable, Sendable {
     }
 }
 
-/// Everything the spaces column draws for one herdr session: the ordered
+/// Everything Paddock knows about one herdr session's spaces: the ordered
 /// workspaces exactly as herdr lists them, which one is focused, plus the panes
 /// that supply their live agent status.
 ///
@@ -79,8 +79,9 @@ struct PaneSummary: Equatable, Hashable, Sendable {
 /// A state is only ever built from a `session.snapshot`, through
 /// `init(snapshot:)`, which is where herdr's wire shape is *checked* as well
 /// as translated: duplicate ids, a pane in an unlisted workspace or a focused
-/// id naming no workspace are refused rather than drawn, because `ListDiff`
-/// and the outline view both assume unique rows and one pill.
+/// id naming no workspace are refused rather than counted: the tile's
+/// indicator is derived from this list and must not be built on a snapshot
+/// that contradicts itself.
 struct WorkspaceListState: Equatable, Sendable {
     let workspaces: [Workspace]
     /// Keyed by pane id, the identifier the per-pane subscription needs.
@@ -88,7 +89,7 @@ struct WorkspaceListState: Equatable, Sendable {
     /// Stored once, for the whole list. `nil` for an empty list.
     let focusedID: WorkspaceID?
     /// The status each workspace draws, folded from its panes once here so a
-    /// render is one lookup per row instead of one scan of every pane per row.
+    /// render is one lookup per space instead of one scan of every pane per space.
     /// A workspace with no listed panes falls back to its own `agentStatus`.
     let statusByWorkspace: [WorkspaceID: AgentStatus]
 
@@ -125,10 +126,10 @@ struct WorkspaceListState: Equatable, Sendable {
     /// Replace-all from a `session.snapshot`, the authoritative starting point.
     ///
     /// herdr says which space is focused twice — a top-level
-    /// `focused_workspace_id` and a `focused` flag on the rows. The top-level
+    /// `focused_workspace_id` and a `focused` flag on the entries. The top-level
     /// id wins and has to name a listed workspace. Without it the flags are
-    /// the fallback, and then exactly one row must carry one: a non-empty
-    /// list with no focused row, or with two, contradicts itself and there is
+    /// the fallback, and then exactly one entry must carry one: a non-empty
+    /// list with no focused entry, or with two, contradicts itself and there is
     /// no basis for picking, so it is refused like any other inconsistency.
     /// An empty list has no focus, and says so with `nil`.
     init(snapshot: SessionSnapshot) throws {

@@ -1,6 +1,6 @@
 import Foundation
 
-/// What one herdr stream event means for the spaces column.
+/// What one herdr stream event means for a session's store.
 ///
 /// **An event is a signal that something may have changed, never a description
 /// of what it changed to.** herdr replays an unmarked historical backlog after
@@ -13,8 +13,8 @@ import Foundation
 /// 0.8.0; `EventsSubscribeParams` has only `subscriptions`).
 ///
 /// And a replayed event's *content* is stale — an old label, an old focus, a
-/// pane that closed hours ago. Applying it walks the rows backwards through the
-/// session's history: that is what marched the focused pill across the column
+/// pane that closed hours ago. Applying it walks the state backwards through the
+/// session's history: that is what marched the focused pill across the old column
 /// for the first ten seconds of every connection, and what once inserted panes
 /// that no longer existed until the store resubscribed itself into an ~11k
 /// stream loop.
@@ -28,7 +28,7 @@ import Foundation
 enum WorkspaceEventPolicy {
     /// What the store does about an event.
     enum Effect: Equatable, Sendable {
-        /// Nothing the column draws depends on this kind.
+        /// Nothing the indicator depends on changes with this kind.
         case ignore
         /// Refetch `session.snapshot` (debounced by the store).
         case resync
@@ -45,7 +45,7 @@ enum WorkspaceEventPolicy {
             .map(\.eventKind)
     )
 
-    /// Every kind Paddock subscribes to invalidates the rows; nothing else can
+    /// Every kind Paddock subscribes to invalidates the state; nothing else can
     /// arrive on purpose, because a subscription is the only way an event
     /// reaches the stream at all — but herdr does stream kinds nobody asked
     /// for, and a snapshot per unknown line would let an unrelated chatty kind

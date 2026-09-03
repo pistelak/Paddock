@@ -129,9 +129,9 @@ struct WorkspaceStoreMachineTests {
     // MARK: - Failures
 
     /// The defect this suite was written for: snapshots failing while the
-    /// stream is still up used to leave stale rows under a footer that said
-    /// nothing. Now the third failure ends the connection, the footer says
-    /// "reconnecting", and the reconnect's own snapshot puts things right.
+    /// stream is still up used to leave a stale state under a connection that
+    /// said nothing. Now the third failure ends the connection, `connection`
+    /// says reconnecting, and the reconnect's own snapshot puts things right.
     @Test func repeatedSnapshotFailuresReconnectInsteadOfGoingQuiet() async throws {
         let (herdr, store) = try await ScriptedHerdr.connectable(clock: clock)
         var seen: [WorkspaceStore.ConnectionState] = []
@@ -272,28 +272,28 @@ struct WorkspaceStoreMachineTests {
     /// stop being told — nobody clears anybody else's closure.
     @Test func anyNumberOfObserversAndEachTokenStandsAlone() async throws {
         let (herdr, store) = try await ScriptedHerdr.connectable(clock: clock)
-        var column = 0
-        var badge = 0
-        let columnToken = store.observe { column += 1 }
-        var badgeToken: ObservationToken? = store.observe { badge += 1 }
-        defer { columnToken.cancel() }
+        var first = 0
+        var second = 0
+        let firstToken = store.observe { first += 1 }
+        var secondToken: ObservationToken? = store.observe { second += 1 }
+        defer { firstToken.cancel() }
         #expect(store.observerCount == 2)
 
         store.start()
         defer { store.stop() }
         try await waitUntil { store.connection == .live }
-        #expect(column >= 1)
-        #expect(badge == column, "both heard the same rounds")
+        #expect(first >= 1)
+        #expect(second == first, "both heard the same rounds")
 
-        badgeToken = nil
+        secondToken = nil
         try await waitUntil { store.observerCount == 1 }
-        let badgeBefore = badge
+        let secondBefore = second
         clock.advance(by: .seconds(1))
         await herdr.alwaysReply(to: .sessionSnapshot, with: ScriptedHerdr.snapshot(workspaces: [("w1", 1, "renamed", true)]))
         await herdr.emit("workspace_renamed")
         try await waitUntil { store.state.workspaces.first?.label == "renamed" }
-        try await waitUntil { column > badgeBefore }
-        #expect(badge == badgeBefore, "a dropped token hears nothing more")
+        try await waitUntil { first > secondBefore }
+        #expect(second == secondBefore, "a dropped token hears nothing more")
     }
 
     @Test func cancellingATokenTwiceIsHarmless() async throws {

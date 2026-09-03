@@ -63,7 +63,7 @@ struct HerdrSocketClient: HerdrTransport, Sendable {
     /// Only kinds, never payloads: the store treats every event as "something
     /// may have moved" and refetches a snapshot (see `WorkspaceEventPolicy`),
     /// so decoding a payload could only ever *fail* — and a herdr that reshaped
-    /// an event's payload would then silently freeze the column. Reading just
+    /// an event's payload would then silently freeze the indicator. Reading just
     /// the top-level `event` string cannot be broken that way.
     ///
     /// Returns only once herdr has acknowledged the subscription, so a rejected
@@ -109,7 +109,7 @@ struct HerdrSocketClient: HerdrTransport, Sendable {
                         // never fatal: the stream outlives whatever produced
                         // it. It is counted and logged so that a herdr change
                         // that makes *every* line unreadable is visible
-                        // somewhere, instead of surfacing as a column that
+                        // somewhere, instead of surfacing as an indicator that
                         // quietly stops updating.
                         if let kind = Self.decodeEventKind(data) {
                             events.yield(kind)

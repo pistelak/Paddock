@@ -3,8 +3,8 @@ import GhosttyTerminal
 
 /// Paddock is a single-window app: closing the window quits, window tabbing
 /// is off, and the menu offers no second window. Everything window-scoped
-/// (the selected tab, the two hidden-column flags) is therefore stored
-/// app-wide on purpose.
+/// (the selected tab, the hidden-strip flag) is therefore stored app-wide on
+/// purpose.
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var mainWindowController: MainWindowController?
@@ -78,11 +78,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let notices = await loadOrSeed(store, using: coordinator.herdr)
 
-        let content = MainContentViewController(
-            sidebar: coordinator.sidebar,
-            spaces: coordinator.spaces,
-            panes: coordinator.panes
-        )
+        let content = MainContentViewController(sidebar: coordinator.sidebar, panes: coordinator.panes)
         content.onLayoutChange = { [weak coordinator] in coordinator?.focusSelectedPane() }
         windowController.install(content)
         coordinator.window = windowController.window

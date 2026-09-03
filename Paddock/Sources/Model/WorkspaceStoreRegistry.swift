@@ -84,7 +84,7 @@ final class WorkspaceStoreRegistry {
     // MARK: - Sessions
 
     /// herdr's own answer when it has one, the computed layout otherwise — a
-    /// tab may name a session that has never been created, and the column
+    /// tab may name a session that has never been created, and the store
     /// still needs an address to keep trying.
     func socketPath(for name: SessionName) -> String {
         knownSessions[name]?.socketPath ?? HerdrPaths.socketPath(for: name)

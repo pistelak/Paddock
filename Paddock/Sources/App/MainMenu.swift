@@ -40,14 +40,6 @@ enum MainMenu {
         )
         sidebar.keyEquivalentModifierMask = [.command, .control]
 
-        // No key equivalent: every remaining Cmd chord belongs to herdr,
-        // which reads them through the kitty protocol.
-        menu.addItem(
-            withTitle: "Hide Spaces",
-            action: #selector(MainWindowController.toggleSpacesColumn(_:)),
-            keyEquivalent: ""
-        )
-
         let item = NSMenuItem()
         item.submenu = menu
         return item

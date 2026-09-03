@@ -8,7 +8,7 @@ import Foundation
 /// on the hot path decodes one either. Decoding only the top-level `event`
 /// string means a herdr that reshapes an event's *payload* — renames a field,
 /// drops one, nests it differently — still produces the invalidation the
-/// column depends on. The full-payload `HerdrEvent` below stays as the record
+/// indicator depends on. The full-payload `HerdrEvent` below stays as the record
 /// of herdr's shapes and is exercised by the protocol tests, but production
 /// never decodes it.
 ///
@@ -38,7 +38,7 @@ struct HerdrEventKind: Hashable, Sendable, Decodable, CustomStringConvertible {
 }
 
 /// A stream event, decoded from herdr's `{"event": kind, "data": {…}}`
-/// envelope down to the parts the spaces column reacts to.
+/// envelope down to the parts Paddock once reacted to.
 ///
 /// **Not used on the hot path.** `HerdrSocketClient` streams `HerdrEventKind`;
 /// this type documents herdr's payload shapes and is what the protocol tests

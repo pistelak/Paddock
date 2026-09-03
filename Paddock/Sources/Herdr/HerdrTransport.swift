@@ -30,10 +30,11 @@ extension HerdrTransport {
         try await request(method, params: EmptyParams())
     }
 
-    /// A mutation whose reply nothing reads: the column follows the events the
-    /// mutation causes, never its response. Only the result's `type` tag is
+    /// A request whose reply nothing reads. Only the result's `type` tag is
     /// decoded, and even that is optional, so an enriched or reshaped reply
-    /// cannot make a mutation that worked look like a failure.
+    /// cannot make a request that worked look like a failure. Paddock itself
+    /// no longer mutates herdr state; the QA live test uses this to seed a
+    /// workspace.
     func send(_ method: HerdrMethod, params: some Encodable & Sendable) async throws {
         let _: HerdrResultTag = try await request(method, params: params)
     }
