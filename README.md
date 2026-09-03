@@ -1,138 +1,128 @@
-# Paddock
+<p align="center">
+  <img src="Paddock/Resources/AppIcon.icon/Assets/mark.svg" width="160" alt="Paddock icon: an Australian Shepherd watching a small herd behind a fence">
+</p>
+<!-- TODO: add docs/screenshot.png of the window with two or three session tabs once the tab indicators land -->
 
-A small AppKit shell around [libghostty-spm](https://github.com/Lakr233/libghostty-spm) that shows your
-[herdr](https://herdr.dev) sessions as Slack-style side tabs. One tile per named herdr session
-(`herdr --session <name>`), so personal and work agents live in different worlds.
+<h1 align="center">Paddock</h1>
 
-## Requirements
+<p align="center"><strong>A paddock for your herdr sessions.</strong></p>
 
-- macOS 14+, Xcode 26, [XcodeGen](https://github.com/yonaskolb/XcodeGen) (`brew install xcodegen`)
-- `herdr` on Homebrew's path (`brew install herdr`)
+<p align="center">
+  A small native macOS app that gives every <a href="https://herdr.dev">herdr</a> session its own side tab
+  inside a real <a href="https://ghostty.org">Ghostty</a> terminal, so your AI coding agents stay in their pens
+  and you can see which one is waiting for you.
+</p>
 
-## One-time setup
+---
 
-libghostty ships without theme files. If your `~/.config/ghostty/config` names a theme, link Ghostty.app's
-themes so the config loads unchanged:
+If you run more than one herdr session, say one for work and one for your own projects, each lives in its
+own terminal window, and from the one you are looking at it is hard to tell whether an agent in another one
+has stopped and is waiting. Paddock puts them in one window, one tab per session, with a mark on the tab
+that says what its agents are doing.
+
+## Why you might like it
+
+- **Every session in one window.** Tabs sit down the side like a chat app, one per named herdr session.
+  Once opened, a tab keeps its terminal alive, so switching back does not reload or reconnect it.
+- **A real Ghostty, not a look-alike.** Each tab is a genuine Ghostty terminal surface through
+  [libghostty](https://github.com/Lakr233/libghostty-spm). Paddock loads your `~/.config/ghostty/config`,
+  so theme, font, padding, light and dark switching and keybindings are the ones you already have; the only
+  settings it adds are the ones needed to launch herdr in each tab.
+- **Work and personal never touch.** `herdr --session work` and `herdr --session personal` are separate
+  herdr servers with separate agents and separate sockets. Paddock just puts them side by side.
+- **It knows when an agent needs you.** A tab shows a red badge with a number when spaces in that
+  session have an agent waiting for your input, and how many. With nothing waiting, a green check means something
+  finished that you have not looked at yet, and a quiet blue dot means work is still going on. Every tab
+  reports from the moment Paddock starts, so a session you are not looking at can still get your
+  attention, and VoiceOver reads the same counts.
+- **Stays out of herdr's way.** Beyond the standard application menu and the sidebar toggle, Paddock
+  defines no Command shortcuts, so the chords herdr and your agents expect reach them. Hide the sidebar
+  and the window becomes a plain Ghostty window titled with the session's name.
+- **Works with the sessions you already have.** Paddock lists your existing herdr sessions on first
+  launch and adds nothing of its own to them. Closing a tab never stops a session; that takes an explicit "Stop Session…" with a
+  confirmation. If herdr detaches or exits, the tab shows a Reattach button instead of a dead shell.
+- **Small and native.** AppKit and Swift 6 with strict concurrency, no Electron, no web view, a few
+  thousand lines of Swift.
+
+## Install
+
+Paddock is built from source for now.
+
+**You need**
+
+- macOS 14 or newer
+- [herdr](https://herdr.dev) (`brew install herdr`)
+- Xcode 26 and [XcodeGen](https://github.com/yonaskolb/XcodeGen) (`brew install xcodegen`)
+
+**Build and run**
+
+Clone the repository, then:
+
+```sh
+make run
+```
+
+`make run` generates the Xcode project, builds it into `DerivedData`, and opens the app. Once you have it,
+drag `DerivedData/Build/Products/Debug/Paddock.app` to `/Applications` if you like.
+
+**One-time setup if your Ghostty config names a theme.** libghostty ships without theme files, so a
+`theme = …` line would make Ghostty reject your whole config. Link the themes from Ghostty.app once:
 
 ```sh
 ln -s /Applications/Ghostty.app/Contents/Resources/ghostty/themes ~/.config/ghostty/themes
 ```
 
-## Build & run
+## Using it
 
-```sh
-make run      # xcodegen generate + xcodebuild + open the app
-make test     # unit tests
-```
+**First launch.** Paddock asks herdr for your sessions and makes a tab for each one. Click a tab and it
+runs `herdr --session <name>` inside; attach, detach and work in herdr exactly as you would in a plain
+terminal. A tab whose session is not running is drawn dimmed; hover it to see why ("Session not running",
+"Connecting…", "Reconnecting…").
 
-## App icon
+**Adding a session.** The `+` tile lists any herdr session that has no tab yet, then "New Session…" to
+create one.
 
-The icon is an Icon Composer package, `Paddock/Resources/AppIcon.icon`: a solid paddock green (`#397844`) fill
-and one vector layer, `Assets/mark.svg`, the cream Australian Shepherd with the fence arch and the herd. Xcode 26
-compiles it into every appearance (light, dark, tinted) and also writes the flattened `AppIcon.icns` that
-macOS 14 and 15 use, so there is no hand-maintained `AppIcon.appiconset`; adding one under the same name would
-be ignored. Edit the artwork in Icon Composer, or replace `mark.svg` directly.
+**The tab's menu.** Right-click a tab to rename it, give it a colour, remove it, or stop the herdr session
+behind it. Renaming and recolouring are Paddock's own labels; the herdr session keeps its name.
 
-## Spaces column
+**Files.** Drop files or folders onto a terminal and their paths are pasted at the prompt, shell-quoted
+when needed.
 
-Next to the tile strip is a 220 pt column listing the *spaces* (herdr workspaces) of the selected session:
-one row per space, `number · label`, with an 8 pt status dot — grey idle, blue working, orange blocked,
-green done — and a pill on the space herdr currently has focused.
+**Hiding the sidebar.** View ▸ Hide Sidebar, or Ctrl+Cmd+S. Paddock remembers the choice.
 
-- **Clicking a row is a request, not a selection.** It sends `workspace.focus` over the session's socket and
-  the pill only moves when herdr's `workspace_focused` event comes back, so a space changed inside the TUI
-  and one changed from the column look identical. Keyboard focus stays in the terminal throughout.
-- **The header's `+`** creates a space (`workspace.create`, focused straight away); a row's context menu
-  renames or closes one.
-- **The footer** carries the connection: "Connecting…", "Reconnecting… <reason>", or "Session not running"
-  for a session that has not been started. Rows are never cleared on a failure — they stay, dimmed, as the
-  last thing herdr said, and repopulate when it answers again.
-- **The tile badge.** A session tile carries the same dot in its corner when any of its spaces is working,
-  blocked or done — the most urgent one wins — so a session you are not looking at can still ask for you.
-  A tile gets its badge once it has been selected at least once, because that is when its socket opens.
-- **View ▸ Hide Spaces** collapses the column on its own; hiding the tile strip hides both. Both choices are
-  remembered.
+**Where things live.** Tabs, names and colours are in
+`~/Library/Application Support/Paddock/tabs.json`. Paddock never writes to herdr's or Ghostty's config.
 
-Paddock's column and herdr's own sidebar show the same thing, so hide herdr's in `~/.config/herdr/config.toml`:
+## When something looks wrong
 
-```toml
-[ui]
-sidebar_start_collapsed = true
-sidebar_collapsed_mode = "hidden"
-```
+- **A tab opens a plain shell instead of herdr.** Your Ghostty config almost certainly uses a
+  `theme = dark:…,light:…` line. Paddock handles that one itself, so if a tab still shows a bare shell,
+  look for any other conditional value in the config. The full story is in
+  [docs/internals.md](docs/internals.md#troubleshooting).
+- **The whole config is rejected.** Do the themes symlink above.
+- **herdr says it is already running inside herdr.** Paddock strips inherited `HERDR_*` markers before it
+  starts a tab, so this should not happen; if it does, launch Paddock from Finder rather than from inside a
+  herdr pane and open an issue.
+- **The Dock shows a blank icon after a rebuild.** This is usually the Launch Services icon cache, which
+  is keyed on the app bundle's timestamp. Quit the app, `touch` the `.app`, run `killall Dock`, and open
+  it again.
 
-Then `herdr server reload-config` (or restart the session). herdr keeps its tab bar and splits *inside* a
-space; only the space list moves out into Paddock.
+## Contributing
 
-## How it works
+`make test` runs the unit tests. Suites that need a live herdr are off unless you opt in; how to run them,
+how the app is put together, and why some of it is the way it is are in
+[docs/internals.md](docs/internals.md). Bug reports with a herdr version and a copy of the relevant
+Ghostty config lines are the most useful kind.
 
-- `TerminalHost` owns the single `TerminalController` (one libghostty app) and loads your Ghostty config,
-  resolving a conditional `theme = dark:…,light:…` line first (see Troubleshooting).
-- Each tab lazily gets a `TerminalPaneViewController` whose `AppTerminalView` runs `herdr --session <name>`.
-  Hidden panes keep their surface and herdr client; switching tabs only toggles visibility.
-- Each visited tab also gets a `WorkspaceStore`, which owns one session's spaces list and the connection
-  that keeps it current. It pings, subscribes to events, takes a `session.snapshot`, then refetches that
-  snapshot whenever an event says something moved, reconnecting for ever on a 0.5 → 5 s backoff. A pane
-  surface attaching (herdr starting up) cuts the wait short. Stores outlive tab switches, so switching back
-  is instant.
-- **Events are signals, not state.** herdr replays an unmarked historical backlog after every subscribe —
-  one event per 100 ms, nine seconds of it on a long-lived session — and nothing in the protocol separates a
-  replayed event from a live one, so their stale payloads must never be applied. `session.snapshot` is the
-  only source of rows; an event just asks for a fresh one, leading-edge debounced and floored at one every
-  250 ms.
-- The socket API is herdr's per-session Unix socket, newline-delimited JSON, **one request per connection**:
-  every RPC opens a connection of its own and the events subscription keeps one for its lifetime. Reads run
-  on a dedicated thread per connection publishing an `AsyncThrowingStream` — `FileHandle.bytes` cannot be
-  used here, because a single parked `AsyncBytes` reader starves every other one in the process.
-- Tabs are stored in `~/Library/Application Support/Paddock/tabs.json`, seeded from `herdr session list`
-  on first launch. Removing a tab never touches the herdr session; "Stop Session…" does.
-- When herdr detaches or exits, the pane shows an overlay with a Reattach button.
-- View ▸ Hide Sidebar (Ctrl+Cmd+S) collapses the tile strip; the window then shows a regular title bar
-  naming the active session. The choice is remembered.
+## The name and the dog
 
-## Tests
+A paddock is a fenced field. herdr does the herding; Paddock is the enclosure the herding happens in. The
+dog on the icon is an Australian Shepherd, because the author's is.
 
-Every suite is [Swift Testing](https://developer.apple.com/documentation/testing) (`import Testing`,
-`@Test`, `#expect`); `xcodebuild` still runs the bundle and still writes an `.xctestrun`.
+## Related
 
-`make test` never touches a socket. The suites that need a running herdr (`HerdrSocketClientLiveTests`,
-`WorkspaceStoreLiveTests`, `WorkspaceStoreHardeningLiveTests`) disable themselves with `.enabled(if:)`
-unless `PADDOCK_LIVE_HERDR=1` is in the *test runner's* environment, which the scheme cannot set per
-invocation — inject it into the generated `.xctestrun` instead:
-
-```sh
-xcodebuild build-for-testing -scheme Paddock -configuration Debug -derivedDataPath DerivedData -quiet
-# the format-1 xctestrun keys variables under the target's own node, not under TestConfigurations:
-/usr/libexec/PlistBuddy -c \
-    'Add :PaddockTests:EnvironmentVariables:PADDOCK_LIVE_HERDR string 1' \
-    DerivedData/Build/Products/Paddock_macosx*.xctestrun
-xcodebuild test-without-building -destination platform=macOS \
-    -xctestrun DerivedData/Build/Products/Paddock_macosx*.xctestrun
-```
-
-They read `work` and `default` and only ever mutate a throwaway space (`paddock-e2e-*`) or a throwaway
-session (`paddock-qa`, started headlessly with `herdr --session paddock-qa server`), which
-`PADDOCK_LIVE_HERDR_SOCKET` and `PADDOCK_LIVE_HERDR_QA_SESSION` override.
-
-## Troubleshooting
-
-**A pane runs a plain login shell instead of `herdr --session <name>`.** A ghostty config that uses the
-conditional `theme = dark:A,light:B` syntax costs every pane its command. `Surface.init` re-derives a
-surface's config whenever the surface's conditional state differs from the state the config was loaded with
-(ghostty 1.3.1 `src/Surface.zig:468-484`), and that re-derivation replays the config file from scratch
-(`src/config/Config.zig:4325-4338`). Only `working-directory` is copied back across the rebuild, so
-everything the embedded apprt set for that one surface — `command`, `env`, `wait-after-command` — is dropped
-and ghostty falls back to the login shell; the giveaway in the log is `io_exec: shell integration
-automatically injected shell=.zsh` where a herdr pane should say `shell could not be detected`. Nothing in
-Paddock's Swift is involved, which is why `working_directory` appeared to work while `command` did not.
-
-`GhosttyConditionalTheme` resolves such a line out of the config before libghostty sees it and hands the
-light/dark pair to the package's `TerminalTheme` instead, which leaves the config unconditional. Appearance
-switching still works, and rather better: the package re-renders and pushes the new config to surfaces that
-already exist, which ghostty's own conditional does not do. Configs without a conditional theme are passed
-to libghostty untouched. If a pane still shows a bare shell, check your config for any other conditional
-value.
-
-**`herdr` refuses to start inside a pane** (`HERDR_*` already set). Paddock launched from a herdr pane
-inherits those markers and every surface's child would too, so `HerdrEnvironment.scrubInheritedMarkers()`
-removes them from the process environment before the first surface spawns. Nothing to do.
+- [herdr](https://herdr.dev), the terminal workspace manager for AI coding agents that Paddock wraps.
+- [Ghostty](https://ghostty.org) and [libghostty-spm](https://github.com/Lakr233/libghostty-spm), the
+  terminal inside every tab.
+- [Heeler](https://github.com/ZingerLittleBee/Heeler), a native iOS console for herdr, if you want the
+  same view of your agents from a phone.
