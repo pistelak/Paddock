@@ -33,10 +33,12 @@ final class WorkspaceColumnViewController: NSViewController {
     private var footerTop: NSLayoutConstraint?
     private var footerBottom: NSLayoutConstraint?
 
-    /// Held strongly: the store does not reference the column back (its
-    /// `onChange` captures `self` weakly), so there is no cycle, and the
-    /// coordinator is free to drop a store the moment it stops it.
+    /// Held strongly: the store does not reference the column back (the
+    /// observer captures `self` weakly), so there is no cycle, and the
+    /// registry is free to drop a store the moment it stops it.
     private var store: WorkspaceStore?
+    /// The column's right to be told about `store`; dropped with it.
+    private var observation: ObservationToken?
 
     /// What the outline view has been told about. The data source answers from
     /// these, never from the store, so a store that changes between two
@@ -193,15 +195,14 @@ final class WorkspaceColumnViewController: NSViewController {
 
     /// Points the column at one session's store, or at nothing.
     ///
-    /// The previous store's `onChange` is cleared rather than left dangling:
-    /// a store the coordinator keeps running for another tab must not go on
-    /// driving this column.
+    /// Letting go of the previous token is all it takes to stop hearing from
+    /// the previous store — a store the registry keeps running for another tab
+    /// goes on notifying whoever else watches it, just not this column.
     func bind(_ store: WorkspaceStore?) {
-        if let current = self.store, current !== store {
-            current.onChange = nil
-        }
+        guard store !== self.store else { return }
+        observation?.cancel()
         self.store = store
-        store?.onChange = { [weak self] in self?.render() }
+        observation = store?.observe { [weak self] in self?.render() }
         render()
     }
 

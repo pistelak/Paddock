@@ -135,7 +135,8 @@ struct WorkspaceStoreMachineTests {
     @Test func repeatedSnapshotFailuresReconnectInsteadOfGoingQuiet() async throws {
         let (herdr, store) = try await ScriptedHerdr.connectable(clock: clock)
         var seen: [WorkspaceStore.ConnectionState] = []
-        store.onChange = { seen.append(store.connection) }
+        let observation = store.observe { seen.append(store.connection) }
+        defer { observation.cancel() }
         store.start()
         defer { store.stop() }
         try await waitUntil { store.connection == .live }
@@ -236,7 +237,8 @@ struct WorkspaceStoreMachineTests {
     @Test func stopIsQuietAndAStoppedStoreKeepsItsRows() async throws {
         let (herdr, store) = try await ScriptedHerdr.connectable(clock: clock)
         var notifications = 0
-        store.onChange = { notifications += 1 }
+        let observation = store.observe { notifications += 1 }
+        defer { observation.cancel() }
         store.start()
         try await waitUntil { store.connection == .live }
 
@@ -247,20 +249,59 @@ struct WorkspaceStoreMachineTests {
         await herdr.endStreams()
         clock.advance(by: .seconds(10))
         try await Task.sleep(for: .milliseconds(50))
-        #expect(notifications == afterStop, "no onChange after stop()")
+        #expect(notifications == afterStop, "no observer is called after stop()")
         #expect(store.state.workspaces.map(\.id) == ["w1"], "rows are kept for the next start")
     }
 
-    @Test func onChangeIsCoalescedToOncePerTurn() async throws {
+    @Test func observersAreCalledAtMostOncePerTurn() async throws {
         let (_, store) = try await ScriptedHerdr.connectable(clock: clock)
         var notifications = 0
-        store.onChange = { notifications += 1 }
+        let observation = store.observe { notifications += 1 }
+        defer { observation.cancel() }
         store.start()
         defer { store.stop() }
         try await waitUntil { store.connection == .live }
         // connecting → (snapshot applied) → live all happened within a couple
         // of turns; what matters is that it was not one call per mutation.
         #expect((1 ... 2).contains(notifications), "three mutations, one or two turns")
+    }
+
+    // MARK: - Observation
+
+    /// Two views may watch one store, and letting go of a token is enough to
+    /// stop being told — nobody clears anybody else's closure.
+    @Test func anyNumberOfObserversAndEachTokenStandsAlone() async throws {
+        let (herdr, store) = try await ScriptedHerdr.connectable(clock: clock)
+        var column = 0
+        var badge = 0
+        let columnToken = store.observe { column += 1 }
+        var badgeToken: ObservationToken? = store.observe { badge += 1 }
+        defer { columnToken.cancel() }
+        #expect(store.observerCount == 2)
+
+        store.start()
+        defer { store.stop() }
+        try await waitUntil { store.connection == .live }
+        #expect(column >= 1)
+        #expect(badge == column, "both heard the same rounds")
+
+        badgeToken = nil
+        try await waitUntil { store.observerCount == 1 }
+        let badgeBefore = badge
+        clock.advance(by: .seconds(1))
+        await herdr.alwaysReply(to: .sessionSnapshot, with: ScriptedHerdr.snapshot(workspaces: [("w1", 1, "renamed", true)]))
+        await herdr.emit("workspace_renamed")
+        try await waitUntil { store.state.workspaces.first?.label == "renamed" }
+        try await waitUntil { column > badgeBefore }
+        #expect(badge == badgeBefore, "a dropped token hears nothing more")
+    }
+
+    @Test func cancellingATokenTwiceIsHarmless() async throws {
+        let (_, store) = try await ScriptedHerdr.connectable(clock: clock)
+        let token = store.observe {}
+        token.cancel()
+        token.cancel()
+        #expect(store.observerCount == 0)
     }
 
     // MARK: - Helpers

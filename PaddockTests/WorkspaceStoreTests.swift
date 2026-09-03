@@ -175,7 +175,8 @@ struct WorkspaceStoreTests {
     @Test func aMissingSocketEndsUpInSessionNotRunningAndNotifiesOnce() async throws {
         let store = try makeStore()
         var notifications = 0
-        store.onChange = { notifications += 1 }
+        let observation = store.observe { notifications += 1 }
+        defer { observation.cancel() }
 
         store.start()
         store.start() // idempotent: a second call must not open a second loop
@@ -188,7 +189,7 @@ struct WorkspaceStoreTests {
         #expect(store.connection == .idle)
         let afterStop = notifications
         try await Task.sleep(for: .milliseconds(300))
-        #expect(notifications == afterStop, "no onChange may fire after stop()")
+        #expect(notifications == afterStop, "no observer may be called after stop()")
     }
 
     /// `retryNow()` on a store that was never started must not start one:

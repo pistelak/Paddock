@@ -25,14 +25,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         true
     }
 
-    /// Lets a queued tab-list save reach the disk before the process ends.
+    /// Stops every spaces store, then lets a queued tab-list save reach the
+    /// disk before the process ends.
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        guard let store = coordinator?.store else { return .terminateNow }
+        guard let coordinator else { return .terminateNow }
+        coordinator.stop()
         Task {
-            await store.flush()
+            await coordinator.store.flush()
             sender.reply(toApplicationShouldTerminate: true)
         }
         return .terminateLater
+    }
+
+    /// The Dock icon was clicked. This is where AppKit would expect a
+    /// multi-window app to open a window; Paddock brings back the only one it
+    /// has and asks for nothing else. `hasVisibleWindows` is not consulted:
+    /// AppKit counts a *miniaturised* window as visible, so it would be `true`
+    /// in exactly the case that needs handling.
+    func applicationShouldHandleReopen(_: NSApplication, hasVisibleWindows _: Bool) -> Bool {
+        guard let window = mainWindowController?.window else { return false }
+        if window.isMiniaturized {
+            window.deminiaturize(nil)
+        }
+        window.makeKeyAndOrderFront(nil)
+        return false
     }
 
     func applicationSupportsSecureRestorableState(_: NSApplication) -> Bool {

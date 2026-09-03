@@ -18,16 +18,9 @@ final class TabCoordinator {
 
     private let defaults: UserDefaults
 
-    /// One spaces store per tab, created the first time its tile is selected
-    /// and kept running afterwards so switching back is instant. The store's
-    /// supervising task retains it, so dropping one without `stop()` would
-    /// leak a socket — `remove(_:)` is the only place that drops one.
-    private var workspaceStores: [UUID: WorkspaceStore] = [:]
-
-    /// What `herdr session list` last said, keyed by name. Only the socket
-    /// path is read from it: a tab may name a session herdr has never created,
-    /// and `HerdrPaths` covers that case.
-    private var knownSessions: [SessionName: HerdrSession] = [:]
+    /// Every running spaces store, and what herdr said about sessions. The
+    /// registry is the only thing that starts or stops a store.
+    let registry: WorkspaceStoreRegistry
 
     /// The selected tab of this window. Read from defaults once at start
     /// and written back on change, so it is this instance's state rather
@@ -36,17 +29,26 @@ final class TabCoordinator {
         didSet { defaults.set(selectedTabID?.uuidString, forKey: Self.selectedTabKey) }
     }
 
-    init(store: TabStore, host: TerminalHost, herdrExecutable: URL, defaults: UserDefaults = .standard) {
+    init(
+        store: TabStore,
+        host: TerminalHost,
+        herdrExecutable: URL,
+        defaults: UserDefaults = .standard,
+        registry: WorkspaceStoreRegistry = WorkspaceStoreRegistry()
+    ) {
         self.store = store
         self.host = host
         self.herdrExecutable = herdrExecutable
         self.defaults = defaults
+        self.registry = registry
         herdr = HerdrCLI(executableURL: herdrExecutable)
         selectedTabID = defaults.string(forKey: Self.selectedTabKey).flatMap(UUID.init(uuidString:))
     }
 
     func start() {
         store.onChange = { [weak self] in self?.refreshPresentation() }
+        // Any store's rows or status moved: the tile badges may have too.
+        registry.onChange = { [weak self] _ in self?.refreshPresentation() }
         store.onSaveFailure = { [weak self] error in
             Task { await AlertPresenter.present(error, in: self?.window) }
         }
@@ -69,11 +71,17 @@ final class TabCoordinator {
 
     // MARK: - Selection and presentation
 
+    /// Stops every store. The app calls this once at quit; nothing is usable
+    /// afterwards.
+    func stop() {
+        registry.stopAll()
+    }
+
     private func select(_ tab: SessionTab) {
         selectedTabID = tab.id
         // Before the pane, so the store exists when its surface attaches and
         // asks for an immediate retry.
-        spaces.bind(workspaceStore(for: tab))
+        spaces.bind(registry.store(for: tab))
         panes.select(tab) { [self] in makePane(for: tab) }
         refreshPresentation()
     }
@@ -87,7 +95,10 @@ final class TabCoordinator {
     /// The single path from state to screen: tiles, existing panes and the
     /// window title all derive from the store and this window's selection.
     private func refreshPresentation() {
-        sidebar.render(tabs: store.tabs, selectedID: selectedTabID)
+        let statuses = Dictionary(uniqueKeysWithValues: store.tabs.compactMap { tab in
+            registry.aggregateStatus(of: tab.id).map { (tab.id, $0) }
+        })
+        sidebar.render(tabs: store.tabs, selectedID: selectedTabID, statuses: statuses)
         panes.reconcile(tabs: store.tabs)
         updateWindowTitle()
     }
@@ -100,7 +111,7 @@ final class TabCoordinator {
         case .surfaceAttached:
             // herdr is coming up in that surface: whatever the store was
             // waiting for, now is the moment to try again.
-            workspaceStores[tabID]?.retryNow()
+            registry.existingStore(for: tabID)?.retryNow()
         case .surfaceClosed:
             // Nothing to do: herdr's daemon keeps serving a detached session,
             // and a session that really ended is noticed by the store's own
@@ -118,26 +129,7 @@ final class TabCoordinator {
         window?.title = [tab.displayName, terminalTitle].compactMap { $0 }.joined(separator: " — ")
     }
 
-    // MARK: - Spaces stores
-
-    /// The store for one tab, started on creation and kept until the tab goes.
-    private func workspaceStore(for tab: SessionTab) -> WorkspaceStore {
-        if let existing = workspaceStores[tab.id] { return existing }
-        let workspaces = WorkspaceStore(
-            sessionName: tab.sessionName,
-            socketPath: socketPath(for: tab.sessionName)
-        )
-        workspaceStores[tab.id] = workspaces
-        workspaces.start()
-        return workspaces
-    }
-
-    /// herdr's own answer when it has one, the computed layout otherwise — a
-    /// tab may name a session that has never been created, and the column
-    /// still needs an address to keep trying.
-    private func socketPath(for name: SessionName) -> String {
-        knownSessions[name]?.socketPath ?? HerdrPaths.socketPath(for: name)
-    }
+    // MARK: - Sessions
 
     /// Asks herdr for its sessions once at start-up. A failure is deliberately
     /// silent: every socket path has a fallback, and the add menu is where
@@ -147,25 +139,18 @@ final class TabCoordinator {
         cache(sessions)
     }
 
+    /// Hands the list to the registry. A replaced store that was on screen is
+    /// rebound so the column follows the new one; and because a replaced store
+    /// took its badge with it, the tiles are redrawn whenever anything was
+    /// replaced — a background tab must not keep showing a status nobody is
+    /// tracking any more.
     private func cache(_ sessions: [HerdrSession]) {
-        knownSessions = Dictionary(sessions.map { ($0.name, $0) }, uniquingKeysWith: { first, _ in first })
-        replaceStoresWithStaleSockets()
-    }
-
-    /// A store created before herdr had been asked is pointed at the fallback
-    /// path. If herdr later reports another one, that store would keep failing
-    /// against an address nothing listens on, so it is replaced outright — and
-    /// rebound when it is the store on screen.
-    private func replaceStoresWithStaleSockets() {
-        for (tabID, workspaces) in workspaceStores {
-            guard let tab = store.tab(withID: tabID),
-                  socketPath(for: tab.sessionName) != workspaces.socketPath
-            else { continue }
-            workspaces.stop()
-            workspaceStores[tabID] = nil
-            guard tabID == selectedTabID else { continue }
-            spaces.bind(workspaceStore(for: tab))
+        let replaced = registry.update(knownSessions: sessions)
+        guard !replaced.isEmpty else { return }
+        if let selectedTabID, replaced.contains(selectedTabID), let tab = store.tab(withID: selectedTabID) {
+            spaces.bind(registry.store(for: tab))
         }
+        refreshPresentation()
     }
 
     // MARK: - Actions
@@ -201,9 +186,7 @@ final class TabCoordinator {
     private func remove(_ tab: SessionTab) {
         let wasSelected = selectedTabID == tab.id
         panes.removePane(for: tab.id)
-        // Without `stop()` the supervising task keeps the store — and its
-        // socket — alive for the lifetime of the app.
-        workspaceStores.removeValue(forKey: tab.id)?.stop()
+        registry.drop(tab.id)
         store.removeTab(id: tab.id)
         guard wasSelected else { return }
         if let next = store.tabs.first {
@@ -240,7 +223,7 @@ final class TabCoordinator {
     // dialog the user just filled in and gets an alert of its own.
 
     private var selectedWorkspaceStore: WorkspaceStore? {
-        selectedTabID.flatMap { workspaceStores[$0] }
+        selectedTabID.flatMap(registry.existingStore(for:))
     }
 
     private func handle(_ action: WorkspaceAction, workspaceID: WorkspaceID) {

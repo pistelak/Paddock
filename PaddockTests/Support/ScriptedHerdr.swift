@@ -37,6 +37,13 @@ actor ScriptedHerdr: HerdrTransport {
 
     init() {}
 
+    /// A herdr that already knows how to answer, for the cases where the
+    /// store starts the moment it is created (the registry) and there is no
+    /// window to script it in between.
+    init(alwaysReplying defaults: [HerdrMethod: String]) {
+        self.defaults = defaults.mapValues { Data($0.utf8) }
+    }
+
     // MARK: - Scripting
 
     /// Queues one reply for `method`; consumed in order. Falls back to the
@@ -207,12 +214,15 @@ extension ScriptedHerdr {
     static let ok = #"{"id":"1","result":{"type":"ok"}}"#
 
     /// A `session.snapshot` reply with the given workspaces and panes.
+    /// `workspaceStatus` is the workspace-level `agent_status`, what a row
+    /// falls back to when it has no panes.
     static func snapshot(
         workspaces: [(id: String, number: Int, label: String, focused: Bool)],
-        panes: [(id: String, workspace: String, status: String)] = []
+        panes: [(id: String, workspace: String, status: String)] = [],
+        workspaceStatus: String = "unknown"
     ) -> String {
         let ws = workspaces.map {
-            #"{"workspace_id":"\#($0.id)","number":\#($0.number),"label":"\#($0.label)","focused":\#($0.focused),"agent_status":"unknown"}"#
+            #"{"workspace_id":"\#($0.id)","number":\#($0.number),"label":"\#($0.label)","focused":\#($0.focused),"agent_status":"\#(workspaceStatus)"}"#
         }.joined(separator: ",")
         let ps = panes.map {
             #"{"pane_id":"\#($0.id)","workspace_id":"\#($0.workspace)","agent_status":"\#($0.status)"}"#

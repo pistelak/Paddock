@@ -142,17 +142,7 @@ private final class StatusDotView: NSView {
     }
 
     override func draw(_: NSRect) {
-        Self.color(for: status).setFill()
+        status.dotColor.setFill()
         NSBezierPath(ovalIn: bounds).fill()
-    }
-
-    static func color(for status: AgentStatus) -> NSColor {
-        switch status {
-        case .idle: .tertiaryLabelColor
-        case .working: .systemBlue
-        case .blocked: .systemOrange
-        case .done: .systemGreen
-        case .unknown: .quaternaryLabelColor
-        }
     }
 }

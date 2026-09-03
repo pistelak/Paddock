@@ -35,7 +35,8 @@ struct WorkspaceStoreLiveTests {
     @Test func theStoreGoesLiveAndFillsItsRows() async throws {
         let store = WorkspaceStore(sessionName: try SessionName("work"), socketPath: socketPath)
         var notifications = 0
-        store.onChange = { notifications += 1 }
+        let observation = store.observe { notifications += 1 }
+        defer { observation.cancel() }
 
         store.start()
         try await waitUntil(timeout: .seconds(20)) {
@@ -58,13 +59,13 @@ struct WorkspaceStoreLiveTests {
         // The backlog replay alone is dozens of events; coalescing means the
         // column repaints a handful of times, not once per event.
         #expect(notifications > 0)
-        #expect(notifications < 40, "onChange is coalesced, \(notifications) is too many")
+        #expect(notifications < 40, "notifications are coalesced, \(notifications) is too many")
 
         store.stop()
         #expect(store.connection == .idle)
         let afterStop = notifications
         try await Task.sleep(for: .seconds(1))
-        #expect(notifications == afterStop, "no onChange may fire after stop()")
+        #expect(notifications == afterStop, "no observer may be called after stop()")
         // The rows survive a stop so a reselected tab has something to draw.
         #expect(!store.state.workspaces.isEmpty)
     }

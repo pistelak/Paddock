@@ -1,12 +1,17 @@
 import AppKit
 
 /// A Slack-style workspace tile: rounded colour square with initials, a
-/// ring when selected, a lighter fill on hover.
+/// ring when selected, a lighter fill on hover, and a status dot in the
+/// bottom-right corner when any space in the session has something to say.
 @MainActor
 final class SessionTabItemView: NSView {
     static let size = NSSize(width: 44, height: 44)
     private static let tileInset: CGFloat = 4
     private static let cornerRadius: CGFloat = 9
+    private static let badgeSize: CGFloat = 10
+    /// The gap between the dot and the tile, cut out of the tile so the dot
+    /// reads as sitting on top of it whatever the tile colour.
+    private static let badgeRing: CGFloat = 2
 
     let tabID: UUID
     var onSelect: ((UUID) -> Void)?
@@ -15,6 +20,9 @@ final class SessionTabItemView: NSView {
     private(set) var tab: SessionTab
     private var isSelected = false
     private var isHovered = false
+    /// `WorkspaceListState.aggregateStatus` of the session, or nothing for a
+    /// tab whose store has not run yet.
+    private var status: AgentStatus?
 
     init(tab: SessionTab) {
         tabID = tab.id
@@ -33,11 +41,16 @@ final class SessionTabItemView: NSView {
 
     override var intrinsicContentSize: NSSize { Self.size }
 
-    func apply(tab: SessionTab, selected: Bool) {
+    func apply(tab: SessionTab, selected: Bool, status: AgentStatus?) {
         self.tab = tab
         isSelected = selected
+        self.status = status
         toolTip = tab.sessionName.rawValue
-        setAccessibilityLabel(tab.displayName)
+        if let status, status.deservesBadge {
+            setAccessibilityLabel("\(tab.displayName), \(status.rawValue)")
+        } else {
+            setAccessibilityLabel(tab.displayName)
+        }
         needsDisplay = true
     }
 
@@ -74,6 +87,23 @@ final class SessionTabItemView: NSView {
             x: tileRect.midX - textSize.width / 2,
             y: tileRect.midY - textSize.height / 2
         ))
+
+        if let status, status.deservesBadge {
+            // Bottom-right, overlapping the tile's corner. The ring is cleared
+            // rather than stroked so it shows the sidebar behind, not a colour
+            // that would have to be guessed.
+            let badge = NSRect(
+                x: tileRect.maxX - Self.badgeSize + Self.badgeRing,
+                y: tileRect.minY - Self.badgeRing,
+                width: Self.badgeSize,
+                height: Self.badgeSize
+            )
+            NSGraphicsContext.current?.compositingOperation = .destinationOut
+            NSBezierPath(ovalIn: badge.insetBy(dx: -Self.badgeRing, dy: -Self.badgeRing)).fill()
+            NSGraphicsContext.current?.compositingOperation = .sourceOver
+            status.dotColor.setFill()
+            NSBezierPath(ovalIn: badge).fill()
+        }
     }
 
     // MARK: - Mouse
