@@ -39,6 +39,9 @@ green done — and a pill on the space herdr currently has focused.
 - **The footer** carries the connection: "Connecting…", "Reconnecting… <reason>", or "Session not running"
   for a session that has not been started. Rows are never cleared on a failure — they stay, dimmed, as the
   last thing herdr said, and repopulate when it answers again.
+- **The tile badge.** A session tile carries the same dot in its corner when any of its spaces is working,
+  blocked or done — the most urgent one wins — so a session you are not looking at can still ask for you.
+  A tile gets its badge once it has been selected at least once, because that is when its socket opens.
 - **View ▸ Hide Spaces** collapses the column on its own; hiding the tile strip hides both. Both choices are
   remembered.
 

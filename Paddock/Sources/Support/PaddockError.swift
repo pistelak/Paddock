@@ -13,7 +13,6 @@ enum PaddockError: Error, LocalizedError, Equatable {
     /// one; see `UnixSocketConnection.makeLines()`.
     case herdrSocketAlreadyReading(path: String)
     case herdrRPC(method: HerdrMethod, code: String, message: String)
-    case herdrProtocolMismatch(found: Int)
     case herdrTimeout(method: HerdrMethod)
     case herdrConnectionClosed(method: HerdrMethod)
     /// A `session.snapshot` that contradicts itself (duplicate workspace ids,
@@ -43,8 +42,6 @@ enum PaddockError: Error, LocalizedError, Equatable {
             "The connection to \(path) is already being read."
         case let .herdrRPC(method, code, message):
             "herdr rejected `\(method)`: \(message) (\(code))."
-        case let .herdrProtocolMismatch(found):
-            "This herdr speaks API protocol \(found); Paddock was built for \(HerdrProtocol.supported)."
         case let .herdrTimeout(method):
             "herdr did not answer `\(method)` within \(HerdrSocketClient.requestTimeout)."
         case let .herdrConnectionClosed(method):

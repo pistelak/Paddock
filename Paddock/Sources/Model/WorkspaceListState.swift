@@ -82,22 +82,44 @@ struct PaneSummary: Equatable, Hashable, Sendable {
 /// id naming no workspace are refused rather than drawn, because `ListDiff`
 /// and the outline view both assume unique rows and one pill.
 struct WorkspaceListState: Equatable, Sendable {
-    var workspaces: [Workspace]
+    let workspaces: [Workspace]
     /// Keyed by pane id, the identifier the per-pane subscription needs.
-    var panes: [PaneID: PaneSummary]
+    let panes: [PaneID: PaneSummary]
     /// Stored once, for the whole list. `nil` for an empty list.
-    var focusedID: WorkspaceID?
+    let focusedID: WorkspaceID?
+    /// The status each workspace draws, folded from its panes once here so a
+    /// render is one lookup per row instead of one scan of every pane per row.
+    /// A workspace with no listed panes falls back to its own `agentStatus`.
+    let statusByWorkspace: [WorkspaceID: AgentStatus]
 
     init() {
-        workspaces = []
-        panes = [:]
-        focusedID = nil
+        self.init(workspaces: [], panes: [:], focusedID: nil)
     }
 
+    /// Immutable by design: every field is derived from one snapshot, and the
+    /// store replaces whole states, so nothing may edit one field and leave
+    /// the others describing a different moment.
     init(workspaces: [Workspace], panes: [PaneID: PaneSummary] = [:], focusedID: WorkspaceID? = nil) {
         self.workspaces = workspaces
         self.panes = panes
         self.focusedID = focusedID
+
+        var derived: [WorkspaceID: AgentStatus] = [:]
+        for pane in panes.values {
+            let current = derived[pane.workspaceID]
+            if pane.agentStatus.displayPriority > (current?.displayPriority ?? -1) {
+                derived[pane.workspaceID] = pane.agentStatus
+            }
+        }
+        var statuses: [WorkspaceID: AgentStatus] = [:]
+        statuses.reserveCapacity(workspaces.count)
+        // First entry wins for a duplicated id, matching `workspace(_:)`. The
+        // snapshot mapper never lets a duplicate through; this initialiser is
+        // unchecked and must not disagree with the lookup next to it.
+        for workspace in workspaces where statuses[workspace.id] == nil {
+            statuses[workspace.id] = derived[workspace.id] ?? workspace.agentStatus
+        }
+        statusByWorkspace = statuses
     }
 
     /// Replace-all from a `session.snapshot`, the authoritative starting point.
@@ -165,26 +187,14 @@ struct WorkspaceListState: Equatable, Sendable {
     /// Pane-derived (highest `displayPriority` among its panes) as soon as any
     /// pane of that workspace is known, because the snapshot's panes carry the
     /// finer-grained status. Falls back to the workspace's own `agentStatus`
-    /// for a workspace whose panes are not listed.
+    /// for a workspace whose panes are not listed, and to `.unknown` for an id
+    /// that is not in the list at all.
     func status(of workspaceID: WorkspaceID) -> AgentStatus {
-        var derived: AgentStatus?
-        for pane in panes.values where pane.workspaceID == workspaceID {
-            if pane.agentStatus.displayPriority > (derived?.displayPriority ?? -1) {
-                derived = pane.agentStatus
-            }
-        }
-        return derived ?? workspace(workspaceID)?.agentStatus ?? .unknown
+        statusByWorkspace[workspaceID] ?? .unknown
     }
 
     /// The one status that stands for the whole session — the tile badge.
     var aggregateStatus: AgentStatus {
-        var result = AgentStatus.unknown
-        for workspace in workspaces {
-            let status = status(of: workspace.id)
-            if status.displayPriority > result.displayPriority {
-                result = status
-            }
-        }
-        return result
+        statusByWorkspace.values.max { $0.displayPriority < $1.displayPriority } ?? .unknown
     }
 }

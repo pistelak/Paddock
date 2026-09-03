@@ -6,11 +6,9 @@ import GhosttyTerminal
 @MainActor
 final class TerminalHost {
     let controller: TerminalController
-    let configPath: String?
     let configurationIssue: String?
 
     init(configPath: String?) {
-        self.configPath = configPath
         controller = Self.makeController(configPath: configPath)
         configurationIssue = controller.lastConfigurationIssue
     }

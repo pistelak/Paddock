@@ -84,6 +84,43 @@ struct WorkspaceListStateTests {
         #expect(PaneID(rawValue: "") == nil)
     }
 
+    // MARK: - Derived status
+
+    /// The per-workspace status is folded once at construction and must agree
+    /// with the lookups next to it, including for the unchecked initialiser's
+    /// one odd case: a duplicated id resolves to the first entry, as
+    /// `workspace(_:)` does.
+    @Test func statusByWorkspaceMatchesTheLookupsAndPrefersTheFirstDuplicate() {
+        let state = WorkspaceListState(
+            workspaces: [
+                Workspace(id: "w1", number: 1, label: "a", agentStatus: .blocked),
+                Workspace(id: "w1", number: 1, label: "a-again", agentStatus: .idle),
+                Workspace(id: "w2", number: 2, label: "b", agentStatus: .idle),
+            ],
+            panes: ["w2:p1": PaneSummary(workspaceID: "w2", agentStatus: .working)]
+        )
+        #expect(state.status(of: "w1") == .blocked, "first entry wins, like workspace(_:)")
+        #expect(state.workspace("w1")?.agentStatus == .blocked)
+        #expect(state.status(of: "w2") == .working, "panes beat the workspace's own status")
+        #expect(state.status(of: "w9") == .unknown)
+        #expect(state.aggregateStatus == .blocked)
+        #expect(WorkspaceListState().aggregateStatus == .unknown)
+    }
+
+    /// A pane whose workspace is not listed (impossible through the mapper,
+    /// possible through the unchecked initialiser) belongs to nothing that is
+    /// drawn: its workspace has no status, and it does not count toward the
+    /// badge. Deliberate — the old per-call scan happened to answer for it.
+    @Test func aPaneOfAnUnlistedWorkspaceCountsForNothing() {
+        let state = WorkspaceListState(
+            workspaces: [Workspace(id: "w1", number: 1, label: "a", agentStatus: .idle)],
+            panes: ["w9:p1": PaneSummary(workspaceID: "w9", agentStatus: .working)]
+        )
+        #expect(state.status(of: "w9") == .unknown)
+        #expect(state.status(of: "w1") == .idle)
+        #expect(state.aggregateStatus == .idle)
+    }
+
     // MARK: - Translation
 
     @Test func panesAreKeyedByIdAndWireOnlyFieldsAreDropped() throws {
