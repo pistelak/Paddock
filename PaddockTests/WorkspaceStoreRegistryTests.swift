@@ -160,6 +160,59 @@ struct WorkspaceStoreRegistryTests {
         try await waitUntil { changed.contains(work.id) }
     }
 
+    // MARK: - Every tab at launch
+
+    @Test func startAllOpensOneStorePerTabAndIsIdempotent() async throws {
+        let (registry, factory) = makeRegistry()
+        let tabs = try ["a", "b", "c"].map { try tab($0) }
+        let selected = registry.store(for: tabs[0])
+
+        registry.startAll(for: tabs)
+        #expect(factory.made.count == 3, "one store per tab, the selected one not duplicated")
+        #expect(registry.existingStore(for: tabs[0].id) === selected)
+        for tab in tabs { try await live(try #require(registry.existingStore(for: tab.id))) }
+
+        registry.startAll(for: tabs)
+        #expect(factory.made.count == 3, "a second call starts nothing")
+        registry.stopAll()
+    }
+
+    /// The sequence a later session-list refresh runs: every contradicted store
+    /// is dropped and then every tab — selected or not — gets one again, at the
+    /// path herdr just named.
+    @Test func startAllAfterAnUpdateRecreatesEveryReplacedStoreAtTheNewPath() async throws {
+        let (registry, factory) = makeRegistry()
+        let tabs = try ["a", "b", "c"].map { try tab($0) }
+        registry.startAll(for: tabs)
+        for tab in tabs { try await live(try #require(registry.existingStore(for: tab.id))) }
+
+        let replaced = registry.update(knownSessions: [
+            try session("a", socketPath: "/elsewhere/a.sock"),
+            try session("c", socketPath: "/elsewhere/c.sock"),
+        ])
+        #expect(Set(replaced) == [tabs[0].id, tabs[2].id])
+        registry.startAll(for: tabs)
+
+        #expect(registry.runningTabIDs == Set(tabs.map(\.id)), "every tab has exactly one store again")
+        #expect(factory.made.count == 5, "two were recreated, one was left alone")
+        let paths = Dictionary(uniqueKeysWithValues: factory.made.suffix(2).map { ($0.tab.sessionName.rawValue, $0.socketPath) })
+        #expect(paths == ["a": "/elsewhere/a.sock", "c": "/elsewhere/c.sock"])
+        for tab in tabs { try await live(try #require(registry.existingStore(for: tab.id))) }
+        registry.stopAll()
+    }
+
+    @Test func indicatorInputsFollowTheStore() async throws {
+        let (registry, _) = makeRegistry()
+        let work = try tab("work")
+        #expect(registry.indicatorInputs(of: work.id) == nil)
+        let store = registry.store(for: work)
+        defer { registry.stopAll() }
+        try await live(store)
+        let inputs = try #require(registry.indicatorInputs(of: work.id))
+        #expect(inputs.connection == .live)
+        #expect(inputs.state.count(of: .blocked) == 1)
+    }
+
     private func waitUntil(
         timeout: Duration = .seconds(5),
         sourceLocation: SourceLocation = #_sourceLocation,

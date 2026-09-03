@@ -107,10 +107,17 @@ final class TabCoordinator {
     /// The single path from state to screen: tiles, existing panes and the
     /// window title all derive from the store and this window's selection.
     private func refreshPresentation() {
-        let statuses = Dictionary(uniqueKeysWithValues: store.tabs.compactMap { tab in
-            registry.aggregateStatus(of: tab.id).map { (tab.id, $0) }
+        let indicators = Dictionary(uniqueKeysWithValues: store.tabs.compactMap { tab in
+            registry.indicatorInputs(of: tab.id).map { inputs in
+                (tab.id, TileIndicator(
+                    displayName: tab.displayName,
+                    sessionName: tab.sessionName.rawValue,
+                    state: inputs.state,
+                    connection: inputs.connection
+                ))
+            }
         })
-        sidebar.render(tabs: store.tabs, selectedID: selectedTabID, statuses: statuses)
+        sidebar.render(tabs: store.tabs, selectedID: selectedTabID, indicators: indicators)
         panes.reconcile(tabs: store.tabs)
         updateWindowTitle()
     }
@@ -140,24 +147,30 @@ final class TabCoordinator {
 
     // MARK: - Sessions
 
-    /// Asks herdr for its sessions once at start-up. A failure is deliberately
-    /// silent: every socket path has a fallback, and the add menu is where
-    /// listing sessions is the user's own request and worth an alert.
+    /// Asks herdr for its sessions once at start-up, then opens a store for
+    /// every tab so each tile has an indicator from the start. A listing
+    /// failure is deliberately silent — every socket path has a fallback, and
+    /// the add menu is where listing sessions is the user's own request and
+    /// worth an alert — and does not stop the stores from starting.
     private func refreshKnownSessions() async {
-        guard let sessions = try? await herdr.listSessions() else { return }
-        cache(sessions)
+        if let sessions = try? await herdr.listSessions() {
+            cache(sessions)
+        }
+        // `cache` only restarts when something was replaced; the tabs that had
+        // no store yet get one here either way, listing failure included.
+        registry.startAll(for: store.tabs)
+        refreshPresentation()
     }
 
-    /// Hands the list to the registry. A replaced store took its indicator with
-    /// it, so the tiles are redrawn whenever anything was replaced — a tab must
-    /// not keep showing a status nobody is tracking any more — and the selected
-    /// tab's store is recreated at once so its indicator comes straight back.
+    /// Hands the list to the registry. Every store the list contradicted was
+    /// dropped, so every tab is given a store again at once — at the path herdr
+    /// just named — and the tiles are redrawn. Every tab, not only the selected
+    /// one: with indicators on all tiles, an unselected tab whose store was
+    /// dropped would otherwise show nothing until it was next selected.
     private func cache(_ sessions: [HerdrSession]) {
         let replaced = registry.update(knownSessions: sessions)
         guard !replaced.isEmpty else { return }
-        if let selectedTabID, replaced.contains(selectedTabID), let tab = store.tab(withID: selectedTabID) {
-            _ = registry.store(for: tab)
-        }
+        registry.startAll(for: store.tabs)
         refreshPresentation()
     }
 

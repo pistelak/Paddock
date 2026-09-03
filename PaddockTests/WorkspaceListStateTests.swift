@@ -121,6 +121,23 @@ struct WorkspaceListStateTests {
         #expect(state.aggregateStatus == .idle)
     }
 
+    @Test func countOfAStatusCountsSpaces() {
+        let state = WorkspaceListState(
+            workspaces: [
+                Workspace(id: "w1", number: 1, label: "", agentStatus: .blocked),
+                Workspace(id: "w2", number: 2, label: "", agentStatus: .blocked),
+                Workspace(id: "w3", number: 3, label: "", agentStatus: .done),
+            ],
+            panes: ["w3:p1": PaneSummary(workspaceID: "w3", agentStatus: .working)],
+            focusedID: "w1"
+        )
+        #expect(state.count(of: .blocked) == 2)
+        #expect(state.count(of: .working) == 1, "a pane's status beats its space's own")
+        #expect(state.count(of: .done) == 0)
+        #expect(state.count(of: .idle) == 0)
+        #expect(WorkspaceListState().count(of: .blocked) == 0)
+    }
+
     // MARK: - Translation
 
     @Test func panesAreKeyedByIdAndWireOnlyFieldsAreDropped() throws {

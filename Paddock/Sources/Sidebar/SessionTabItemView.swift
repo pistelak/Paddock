@@ -1,17 +1,21 @@
 import AppKit
 
-/// A Slack-style workspace tile: rounded colour square with initials, a
-/// ring when selected, a lighter fill on hover, and a status dot in the
-/// bottom-right corner when any space in the session has something to say.
+/// A Slack-style session tile: rounded colour square with initials, a ring
+/// when selected, a lighter fill on hover, and in the bottom-right corner the
+/// session's `TileIndicator`: a red number for spaces waiting on the user, a
+/// green check for a finished one, a blue dot for a working one. A tile whose
+/// connection is not live is drawn dimmed and its tooltip says why.
 @MainActor
 final class SessionTabItemView: NSView {
     static let size = NSSize(width: 44, height: 44)
     private static let tileInset: CGFloat = 4
     private static let cornerRadius: CGFloat = 9
-    private static let badgeSize: CGFloat = 10
-    /// The gap between the dot and the tile, cut out of the tile so the dot
+    private static let dotSize: CGFloat = 10
+    private static let badgeHeight: CGFloat = 16
+    /// The gap between the mark and the tile, cut out of the tile so the mark
     /// reads as sitting on top of it whatever the tile colour.
-    private static let badgeRing: CGFloat = 2
+    private static let markRing: CGFloat = 2
+    private static let dimmedAlpha: CGFloat = 0.5
 
     let tabID: UUID
     var onSelect: ((UUID) -> Void)?
@@ -20,18 +24,17 @@ final class SessionTabItemView: NSView {
     private(set) var tab: SessionTab
     private var isSelected = false
     private var isHovered = false
-    /// `WorkspaceListState.aggregateStatus` of the session, or nothing for a
-    /// tab whose store has not run yet.
-    private var status: AgentStatus?
+    private var indicator: TileIndicator
 
     init(tab: SessionTab) {
         tabID = tab.id
         self.tab = tab
+        indicator = .none(displayName: tab.displayName, sessionName: tab.sessionName.rawValue)
         super.init(frame: NSRect(origin: .zero, size: Self.size))
-        toolTip = tab.sessionName.rawValue
+        toolTip = indicator.tooltip
         setAccessibilityElement(true)
         setAccessibilityRole(.button)
-        setAccessibilityLabel(tab.displayName)
+        setAccessibilityLabel(indicator.accessibilityLabel)
     }
 
     @available(*, unavailable)
@@ -41,16 +44,13 @@ final class SessionTabItemView: NSView {
 
     override var intrinsicContentSize: NSSize { Self.size }
 
-    func apply(tab: SessionTab, selected: Bool, status: AgentStatus?) {
+    func apply(tab: SessionTab, selected: Bool, indicator: TileIndicator) {
         self.tab = tab
         isSelected = selected
-        self.status = status
-        toolTip = tab.sessionName.rawValue
-        if let status, status.deservesBadge {
-            setAccessibilityLabel("\(tab.displayName), \(status.rawValue)")
-        } else {
-            setAccessibilityLabel(tab.displayName)
-        }
+        self.indicator = indicator
+        toolTip = indicator.tooltip
+        setAccessibilityLabel(indicator.accessibilityLabel)
+        alphaValue = indicator.isDimmed ? Self.dimmedAlpha : 1
         needsDisplay = true
     }
 
@@ -88,21 +88,72 @@ final class SessionTabItemView: NSView {
             y: tileRect.midY - textSize.height / 2
         ))
 
-        if let status, status.deservesBadge {
-            // Bottom-right, overlapping the tile's corner. The ring is cleared
-            // rather than stroked so it shows the sidebar behind, not a colour
-            // that would have to be guessed.
-            let badge = NSRect(
-                x: tileRect.maxX - Self.badgeSize + Self.badgeRing,
-                y: tileRect.minY - Self.badgeRing,
-                width: Self.badgeSize,
-                height: Self.badgeSize
+        if let mark = indicator.mark {
+            drawMark(mark, on: tileRect)
+        }
+    }
+
+    /// The corner mark, bottom-right and overlapping the tile's corner. The
+    /// ring around it is cleared rather than stroked so it shows the sidebar
+    /// behind, not a colour that would have to be guessed.
+    private func drawMark(_ mark: TileIndicator.Mark, on tileRect: NSRect) {
+        let shape: NSBezierPath
+        var label: NSAttributedString?
+        switch mark {
+        case let .attention(count):
+            let text = count > 9 ? "9+" : String(count)
+            let attributed = NSAttributedString(string: text, attributes: [
+                .font: NSFont.monospacedDigitSystemFont(ofSize: 10, weight: .bold),
+                .foregroundColor: NSColor.white,
+            ])
+            label = attributed
+            let width = max(Self.badgeHeight, attributed.size().width + 8)
+            // Right edge where the dot's would be, so the cleared ring stays
+            // inside the view instead of being clipped at its edge.
+            let rect = NSRect(
+                x: tileRect.maxX + Self.markRing - width,
+                y: tileRect.minY - Self.markRing,
+                width: width,
+                height: Self.badgeHeight
             )
-            NSGraphicsContext.current?.compositingOperation = .destinationOut
-            NSBezierPath(ovalIn: badge.insetBy(dx: -Self.badgeRing, dy: -Self.badgeRing)).fill()
-            NSGraphicsContext.current?.compositingOperation = .sourceOver
-            status.dotColor.setFill()
-            NSBezierPath(ovalIn: badge).fill()
+            shape = NSBezierPath(roundedRect: rect, xRadius: Self.badgeHeight / 2, yRadius: Self.badgeHeight / 2)
+        case .done, .working:
+            let rect = NSRect(
+                x: tileRect.maxX - Self.dotSize + Self.markRing,
+                y: tileRect.minY - Self.markRing,
+                width: Self.dotSize,
+                height: Self.dotSize
+            )
+            shape = NSBezierPath(ovalIn: rect)
+        }
+
+        // A ring `markRing` wider all round.
+        let ringRect = shape.bounds.insetBy(dx: -Self.markRing, dy: -Self.markRing)
+        let ringPath = mark.isBadge
+            ? NSBezierPath(roundedRect: ringRect, xRadius: ringRect.height / 2, yRadius: ringRect.height / 2)
+            : NSBezierPath(ovalIn: ringRect)
+        NSGraphicsContext.current?.compositingOperation = .destinationOut
+        ringPath.fill()
+        NSGraphicsContext.current?.compositingOperation = .sourceOver
+        mark.color.setFill()
+        shape.fill()
+
+        if let label {
+            let size = label.size()
+            label.draw(at: NSPoint(x: shape.bounds.midX - size.width / 2, y: shape.bounds.midY - size.height / 2))
+        } else if case .done = mark {
+            // A check: two strokes inside the dot, white, so "finished" is a
+            // shape and not only a colour.
+            let b = shape.bounds
+            let check = NSBezierPath()
+            check.move(to: NSPoint(x: b.minX + b.width * 0.27, y: b.minY + b.height * 0.50))
+            check.line(to: NSPoint(x: b.minX + b.width * 0.44, y: b.minY + b.height * 0.32))
+            check.line(to: NSPoint(x: b.minX + b.width * 0.74, y: b.minY + b.height * 0.68))
+            check.lineWidth = 1.6
+            check.lineCapStyle = .round
+            check.lineJoinStyle = .round
+            NSColor.white.setStroke()
+            check.stroke()
         }
     }
 

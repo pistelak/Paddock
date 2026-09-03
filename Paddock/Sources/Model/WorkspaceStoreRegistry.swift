@@ -15,10 +15,11 @@ import Foundation
 /// had been asked may be pointed at the fallback path and need replacing once
 /// the real one is known.
 ///
-/// Stores are created the first time a tab is selected and kept running
-/// afterwards so switching back is instant. A tab that has never been
-/// selected has no store and therefore no badge yet; opening every store at
-/// launch would cost one socket per tab before the user has looked at any.
+/// Every tab gets a store: the selected one the moment it is selected, the
+/// rest right after herdr's session list has been resolved at launch
+/// (`startAll(for:)`), so an unvisited tile still shows a live indicator. That
+/// is one idle socket and one event stream per tab; herdr's replayed backlog
+/// per connect is already rate-limited by the store.
 @MainActor
 final class WorkspaceStoreRegistry {
     /// Builds a store for a tab at a socket path — injectable so tests can
@@ -56,10 +57,27 @@ final class WorkspaceStoreRegistry {
         stores[tabID]
     }
 
-    /// What the tile badge shows: the whole session folded into one status,
-    /// or nothing for a tab that has not been visited yet.
+    /// The whole session folded into one status, or nothing for a tab that has
+    /// no store yet.
     func aggregateStatus(of tabID: UUID) -> AgentStatus? {
         stores[tabID]?.state.aggregateStatus
+    }
+
+    /// What a tile's indicator is built from, or nothing for a tab that has no
+    /// store yet.
+    func indicatorInputs(of tabID: UUID) -> (state: WorkspaceListState, connection: WorkspaceStore.ConnectionState)? {
+        guard let store = stores[tabID] else { return nil }
+        return (store.state, store.connection)
+    }
+
+    /// Starts a store for every tab that has none, so every tile has an
+    /// indicator from launch rather than after its first visit. Called once the
+    /// session list has been resolved (or has failed), so no store connects to
+    /// a fallback socket path only to be replaced a moment later.
+    func startAll(for tabs: [SessionTab]) {
+        for tab in tabs where stores[tab.id] == nil {
+            _ = store(for: tab)
+        }
     }
 
     var runningTabIDs: Set<UUID> {

@@ -194,7 +194,13 @@ struct WorkspaceListState: Equatable, Sendable {
         statusByWorkspace[workspaceID] ?? .unknown
     }
 
-    /// The one status that stands for the whole session — the tile badge.
+    /// How many spaces currently report `status` — the tile's number counts
+    /// `.blocked` ones.
+    func count(of status: AgentStatus) -> Int {
+        statusByWorkspace.values.reduce(0) { $0 + ($1 == status ? 1 : 0) }
+    }
+
+    /// The one status that stands for the whole session.
     var aggregateStatus: AgentStatus {
         statusByWorkspace.values.max { $0.displayPriority < $1.displayPriority } ?? .unknown
     }

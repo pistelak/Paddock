@@ -38,9 +38,9 @@ final class SidebarViewController: NSViewController {
         ])
     }
 
-    /// `statuses` carries a badge per tab for the sessions that have one;
-    /// tabs missing from it draw no dot.
-    func render(tabs: [SessionTab], selectedID: UUID?, statuses: [UUID: AgentStatus] = [:]) {
+    /// `indicators` carries what each tile shows in its corner and says in its
+    /// tooltip; a tab missing from it shows nothing.
+    func render(tabs: [SessionTab], selectedID: UUID?, indicators: [UUID: TileIndicator] = [:]) {
         for tab in tabs where items[tab.id] == nil {
             items[tab.id] = makeItem(for: tab)
         }
@@ -58,7 +58,11 @@ final class SidebarViewController: NSViewController {
         stack.addArrangedSubview(addButton)
 
         for tab in tabs {
-            items[tab.id]?.apply(tab: tab, selected: tab.id == selectedID, status: statuses[tab.id])
+            items[tab.id]?.apply(
+                tab: tab,
+                selected: tab.id == selectedID,
+                indicator: indicators[tab.id] ?? .none(displayName: tab.displayName, sessionName: tab.sessionName.rawValue)
+            )
         }
     }
 
