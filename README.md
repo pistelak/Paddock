@@ -25,6 +25,14 @@ make run      # xcodegen generate + xcodebuild + open the app
 make test     # unit tests
 ```
 
+## App icon
+
+The icon is an Icon Composer package, `Paddock/Resources/AppIcon.icon`: a solid paddock green (`#397844`) fill
+and one vector layer, `Assets/mark.svg`, the cream Australian Shepherd with the fence arch and the herd. Xcode 26
+compiles it into every appearance (light, dark, tinted) and also writes the flattened `AppIcon.icns` that
+macOS 14 and 15 use, so there is no hand-maintained `AppIcon.appiconset`; adding one under the same name would
+be ignored. Edit the artwork in Icon Composer, or replace `mark.svg` directly.
+
 ## Spaces column
 
 Next to the tile strip is a 220 pt column listing the *spaces* (herdr workspaces) of the selected session:
