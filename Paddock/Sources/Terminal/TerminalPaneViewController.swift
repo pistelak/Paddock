@@ -7,6 +7,29 @@ import GhosttyTerminal
 /// which the overlay offers to reattach.
 @MainActor
 final class TerminalPaneViewController: NSViewController {
+    /// Where the pane is in its life. One value, so "an overlay with no
+    /// terminal", "a stale reason with no overlay" and the like cannot be
+    /// written; every transition is a whole new value.
+    private enum PaneState {
+        /// The terminal is up and herdr is (being) attached in it.
+        case attached(PaddockTerminalView)
+        /// The surface ended; the overlay says why and offers a reattach.
+        case ended(PaddockTerminalView, DetachedOverlayView, SurfaceEnd)
+
+        var terminal: PaddockTerminalView {
+            switch self {
+            case let .attached(terminal), let .ended(terminal, _, _): terminal
+            }
+        }
+
+        var overlay: DetachedOverlayView? {
+            switch self {
+            case .attached: nil
+            case let .ended(_, overlay, _): overlay
+            }
+        }
+    }
+
     private(set) var tab: SessionTab
     private(set) var lastTitle: String?
 
@@ -14,9 +37,8 @@ final class TerminalPaneViewController: NSViewController {
 
     private let host: TerminalHost
     private let herdrExecutable: URL
-    private var terminalView: PaddockTerminalView?
-    private var overlay: DetachedOverlayView?
-    private var overlayProcessAlive = false
+    /// `nil` only before `loadView()`.
+    private var state: PaneState?
     private var isVisible = true
 
     init(tab: SessionTab, host: TerminalHost, herdrExecutable: URL) {
@@ -35,42 +57,44 @@ final class TerminalPaneViewController: NSViewController {
         let container = NSView()
         container.wantsLayer = true
         view = container
-        attachTerminalView()
+        state = .attached(attachTerminalView())
     }
 
     // MARK: - Host API
 
     func update(tab: SessionTab) {
         self.tab = tab
-        terminalView?.setAccessibilityLabel(accessibilityLabel)
-        overlay?.message = overlayMessage
+        state?.terminal.setAccessibilityLabel(accessibilityLabel)
+        if case let .ended(_, overlay, end)? = state {
+            overlay.message = Self.overlayMessage(for: end, tab: tab)
+        }
     }
 
     func setVisible(_ visible: Bool) {
         isVisible = visible
-        terminalView?.setSurfaceVisible(visible)
+        state?.terminal.setSurfaceVisible(visible)
     }
 
     /// Moves keyboard focus into this pane: the terminal, or the Reattach
     /// button while the overlay is up. Does nothing for a hidden pane, so a
     /// background pane whose process ends never steals focus.
     func focusPreferredResponder() {
-        guard isVisible else { return }
-        if let overlay {
+        guard isVisible, let state else { return }
+        if let overlay = state.overlay {
             view.window?.makeFirstResponder(overlay.reattachButton)
         } else {
-            terminalView?.acquireProgrammaticFocus()
+            state.terminal.acquireProgrammaticFocus()
         }
     }
 
+    /// Tears the ended surface and its overlay down and starts a fresh one.
     func reattach() {
-        overlay?.removeFromSuperview()
-        overlay = nil
-        terminalView?.removeFromSuperview()
-        terminalView = nil
+        guard case let .ended(terminal, overlay, _)? = state else { return }
+        overlay.removeFromSuperview()
+        terminal.removeFromSuperview()
         lastTitle = nil
         onEvent?(.titleChanged(nil))
-        attachTerminalView()
+        state = .attached(attachTerminalView())
         focusPreferredResponder()
     }
 
@@ -95,13 +119,14 @@ final class TerminalPaneViewController: NSViewController {
         "Terminal for \(tab.displayName)"
     }
 
-    private var overlayMessage: String {
-        overlayProcessAlive
-            ? "Session “\(tab.displayName)” was detached."
-            : "herdr exited for session “\(tab.displayName)”."
+    private static func overlayMessage(for end: SurfaceEnd, tab: SessionTab) -> String {
+        switch end {
+        case .detached: "Session “\(tab.displayName)” was detached."
+        case .exited: "herdr exited for session “\(tab.displayName)”."
+        }
     }
 
-    private func attachTerminalView() {
+    private func attachTerminalView() -> PaddockTerminalView {
         let terminal = PaddockTerminalView(frame: view.bounds)
         terminal.translatesAutoresizingMaskIntoConstraints = false
         terminal.delegate = self
@@ -116,13 +141,13 @@ final class TerminalPaneViewController: NSViewController {
             terminal.bottomAnchor.constraint(equalTo: view.bottomAnchor),
         ])
         terminal.setSurfaceVisible(isVisible)
-        terminalView = terminal
+        return terminal
     }
 
-    private func showOverlay(processAlive: Bool) {
-        guard overlay == nil else { return }
-        overlayProcessAlive = processAlive
-        let overlay = DetachedOverlayView(message: overlayMessage)
+    private func end(_ end: SurfaceEnd) {
+        // A second close for a surface that has already ended changes nothing.
+        guard case let .attached(terminal)? = state else { return }
+        let overlay = DetachedOverlayView(message: Self.overlayMessage(for: end, tab: tab))
         overlay.onReattach = { [weak self] in self?.reattach() }
         overlay.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(overlay)
@@ -132,7 +157,7 @@ final class TerminalPaneViewController: NSViewController {
             overlay.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             overlay.bottomAnchor.constraint(equalTo: view.bottomAnchor),
         ])
-        self.overlay = overlay
+        state = .ended(terminal, overlay, end)
         focusPreferredResponder()
     }
 }
@@ -149,8 +174,9 @@ extension TerminalPaneViewController: TerminalSurfaceTitleDelegate,
     }
 
     func terminalDidClose(processAlive: Bool) {
-        showOverlay(processAlive: processAlive)
-        onEvent?(.surfaceClosed(processAlive: processAlive))
+        let end = SurfaceEnd(processAlive: processAlive)
+        self.end(end)
+        onEvent?(.surfaceClosed(end))
     }
 
     /// The surface exists, so the `herdr` process behind it has just been

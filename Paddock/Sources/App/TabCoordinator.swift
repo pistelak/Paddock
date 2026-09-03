@@ -1,8 +1,13 @@
 import AppKit
 
 /// Glues the tab store, the sidebar and the pane container together for
-/// one window and implements every user action on tabs. Window-local state
-/// (which tab is selected) lives here, not in the shared store.
+/// the window: which tab is selected, what each view is bound to, and where a
+/// user action on a tab goes. Window-local state (the selection) lives here,
+/// not in the shared store.
+///
+/// Everything that is a dialog or a menu of its own has moved out:
+/// `SpaceCommands` (rename/close/create a space), `AddSessionMenu`, and
+/// `WindowTitle`. Every running `WorkspaceStore` belongs to `registry`.
 @MainActor
 final class TabCoordinator {
     private static let selectedTabKey = "selectedTabID"
@@ -22,12 +27,10 @@ final class TabCoordinator {
     /// registry is the only thing that starts or stops a store.
     let registry: WorkspaceStoreRegistry
 
-    /// The selected tab of this window. Read from defaults once at start
-    /// and written back on change, so it is this instance's state rather
-    /// than a live view of a shared key.
-    private(set) var selectedTabID: UUID? {
-        didSet { defaults.set(selectedTabID?.uuidString, forKey: Self.selectedTabKey) }
-    }
+    /// The selected tab. Read from defaults once at start and written back by
+    /// `select(_:)`, so it is this instance's state rather than a live view of
+    /// the key. Paddock has one window, so the key is app-wide on purpose.
+    private(set) var selectedTabID: UUID?
 
     init(
         store: TabStore,
@@ -53,10 +56,15 @@ final class TabCoordinator {
             Task { await AlertPresenter.present(error, in: self?.window) }
         }
         sidebar.onAction = { [weak self] action, id in self?.handle(action, tabID: id) }
-        sidebar.onAdd = { [weak self] anchor in self?.showAddMenu(from: anchor) }
+        sidebar.onAdd = { [weak self] anchor in
+            Task { await self?.showAddMenu(from: anchor) }
+        }
         spaces.onAction = { [weak self] action, id in self?.handle(action, workspaceID: id) }
         spaces.onCreate = { [weak self] _ in
-            Task { await self?.createSpace() }
+            Task {
+                guard let self, let workspaces = self.selectedWorkspaceStore else { return }
+                await self.spaceCommands.create(in: workspaces)
+            }
         }
 
         Task { [weak self] in await self?.refreshKnownSessions() }
@@ -69,21 +77,33 @@ final class TabCoordinator {
         }
     }
 
-    // MARK: - Selection and presentation
-
     /// Stops every store. The app calls this once at quit; nothing is usable
     /// afterwards.
     func stop() {
         registry.stopAll()
     }
 
+    // MARK: - Selection and presentation
+
     private func select(_ tab: SessionTab) {
-        selectedTabID = tab.id
+        setSelectedTab(tab.id)
         // Before the pane, so the store exists when its surface attaches and
         // asks for an immediate retry.
         spaces.bind(registry.store(for: tab))
         panes.select(tab) { [self] in makePane(for: tab) }
         refreshPresentation()
+    }
+
+    private func setSelectedTab(_ id: UUID?) {
+        selectedTabID = id
+        defaults.set(id?.uuidString, forKey: Self.selectedTabKey)
+    }
+
+    /// Puts the keyboard into the selected tab's pane — after a layout change,
+    /// or after a space was focused from the column.
+    func focusSelectedPane() {
+        guard let selectedTabID else { return }
+        panes.focusPane(selectedTabID)
     }
 
     private func makePane(for tab: SessionTab) -> TerminalPaneViewController {
@@ -121,12 +141,9 @@ final class TabCoordinator {
     }
 
     private func updateWindowTitle() {
-        guard let id = selectedTabID, let tab = store.tab(withID: id) else {
-            window?.title = "Paddock"
-            return
-        }
-        let terminalTitle = panes.pane(for: id)?.lastTitle
-        window?.title = [tab.displayName, terminalTitle].compactMap { $0 }.joined(separator: " — ")
+        let tab = selectedTabID.flatMap(store.tab(withID:))
+        let terminalTitle = selectedTabID.flatMap(panes.pane(for:))?.lastTitle
+        window?.title = WindowTitle.text(tab: tab, terminalTitle: terminalTitle)
     }
 
     // MARK: - Sessions
@@ -153,7 +170,7 @@ final class TabCoordinator {
         refreshPresentation()
     }
 
-    // MARK: - Actions
+    // MARK: - Tab actions
 
     private func handle(_ action: SidebarAction, tabID: UUID) {
         guard let tab = store.tab(withID: tabID) else { return }
@@ -192,7 +209,7 @@ final class TabCoordinator {
         if let next = store.tabs.first {
             select(next)
         } else {
-            selectedTabID = nil
+            setSelectedTab(nil)
             spaces.bind(nil)
             refreshPresentation()
         }
@@ -214,16 +231,18 @@ final class TabCoordinator {
         }
     }
 
-    // MARK: - Spaces actions
+    // MARK: - Space actions
     //
     // Every one of these runs against the *selected* tab's store, because that
     // is the store the column is bound to and the only one whose rows the user
-    // can click. A failed focus is a footnote in the column's footer — it is
-    // one click among many — while a failed create, rename or close answers a
-    // dialog the user just filled in and gets an alert of its own.
+    // can click.
 
     private var selectedWorkspaceStore: WorkspaceStore? {
         selectedTabID.flatMap(registry.existingStore(for:))
+    }
+
+    private var spaceCommands: SpaceCommands {
+        SpaceCommands(window: window)
     }
 
     private func handle(_ action: WorkspaceAction, workspaceID: WorkspaceID) {
@@ -238,97 +257,30 @@ final class TabCoordinator {
                     // has moved to another tab meanwhile, whose pane and
                     // column must not react to a stale completion.
                     guard selectedWorkspaceStore === workspaces else { return }
-                    panes.focusSelectedPane()
+                    focusSelectedPane()
                 } catch {
                     guard selectedWorkspaceStore === workspaces else { return }
                     spaces.showTransientError(error.localizedDescription)
                 }
             }
         case .rename:
-            Task { await renameSpace(workspaceID, in: workspaces) }
+            Task { await spaceCommands.rename(workspaceID, in: workspaces) }
         case .close:
-            Task { await closeSpace(workspaceID, in: workspaces) }
-        }
-    }
-
-    private func renameSpace(_ workspaceID: WorkspaceID, in workspaces: WorkspaceStore) async {
-        guard let workspace = workspaces.state.workspace(workspaceID) else { return }
-        guard let raw = await AlertPresenter.promptForText(
-            title: "Rename Space",
-            message: "Shown in the Spaces column and in herdr’s own tab bar.",
-            placeholder: "Label",
-            initialValue: workspace.label,
-            confirmTitle: "Rename",
-            in: window
-        ) else { return }
-        let label = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !label.isEmpty else { return }
-        do {
-            try await workspaces.rename(workspaceID, to: label)
-        } catch {
-            await AlertPresenter.present(error, in: window)
-        }
-    }
-
-    private func closeSpace(_ workspaceID: WorkspaceID, in workspaces: WorkspaceStore) async {
-        guard let workspace = workspaces.state.workspace(workspaceID) else { return }
-        let confirmed = await AlertPresenter.confirm(
-            title: "Close space “\(Self.displayName(of: workspace))”?",
-            message: "Every pane and agent in it will be terminated.",
-            confirmTitle: "Close Space",
-            destructive: true,
-            in: window
-        )
-        guard confirmed else { return }
-        do {
-            try await workspaces.close(workspaceID)
-        } catch {
-            await AlertPresenter.present(error, in: window)
-        }
-    }
-
-    /// A space herdr has no label for is known by its number, exactly as the
-    /// row draws it.
-    private static func displayName(of workspace: Workspace) -> String {
-        workspace.label.isEmpty ? "\(workspace.number)" : workspace.label
-    }
-
-    private func createSpace() async {
-        guard let workspaces = selectedWorkspaceStore else { return }
-        guard let raw = await AlertPresenter.promptForText(
-            title: "New Space",
-            message: "herdr creates the space and moves to it.",
-            placeholder: "Label (optional)",
-            confirmTitle: "Create",
-            in: window
-        ) else { return }
-        let label = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        do {
-            try await workspaces.create(label: label.isEmpty ? nil : label)
-        } catch {
-            await AlertPresenter.present(error, in: window)
+            Task { await spaceCommands.close(workspaceID, in: workspaces) }
         }
     }
 
     // MARK: - Adding tabs
 
-    private func showAddMenu(from anchor: NSView) {
-        Task {
-            let untabbed = await untabbedSessions()
-            let menu = NSMenu()
-            for name in untabbed {
-                let item = NSMenuItem(title: name.rawValue, action: #selector(addExistingSession(_:)), keyEquivalent: "")
-                item.target = self
-                item.representedObject = name
-                menu.addItem(item)
-            }
-            if !untabbed.isEmpty {
-                menu.addItem(.separator())
-            }
-            let create = NSMenuItem(title: "New Session…", action: #selector(createSession), keyEquivalent: "")
-            create.target = self
-            menu.addItem(create)
-            menu.popUp(positioning: nil, at: NSPoint(x: anchor.bounds.maxX + 4, y: anchor.bounds.midY), in: anchor)
+    private func showAddMenu(from anchor: NSView) async {
+        let untabbed = await untabbedSessions()
+        switch AddSessionMenu.present(from: anchor, sessions: untabbed) {
+        case nil:
+            return
+        case let .existing(name)?:
+            addTab(name)
+        case .create?:
+            await createSession()
         }
     }
 
@@ -350,25 +302,18 @@ final class TabCoordinator {
         }
     }
 
-    @objc private func addExistingSession(_ sender: NSMenuItem) {
-        guard let name = sender.representedObject as? SessionName else { return }
-        addTab(name)
-    }
-
-    @objc private func createSession() {
-        Task {
-            guard let raw = await AlertPresenter.promptForText(
-                title: "New herdr Session",
-                message: "herdr creates the session the first time the tab is opened.",
-                placeholder: "e.g. work, personal, client-x",
-                confirmTitle: "Add",
-                in: window
-            ) else { return }
-            do {
-                addTab(try SessionName(raw))
-            } catch {
-                await AlertPresenter.present(error, in: window)
-            }
+    private func createSession() async {
+        guard let raw = await AlertPresenter.promptForText(
+            title: "New herdr Session",
+            message: "herdr creates the session the first time the tab is opened.",
+            placeholder: "e.g. work, personal, client-x",
+            confirmTitle: "Add",
+            in: window
+        ) else { return }
+        do {
+            addTab(try SessionName(raw))
+        } catch {
+            await AlertPresenter.present(error, in: window)
         }
     }
 

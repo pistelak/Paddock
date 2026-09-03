@@ -128,15 +128,7 @@ final class SidebarViewController: NSViewController {
     }
 
     private func menuItem(_ title: String, action: SidebarAction, id: UUID) -> NSMenuItem {
-        let item = NSMenuItem(title: title, action: #selector(contextMenuItemChosen(_:)), keyEquivalent: "")
-        item.target = self
-        item.representedObject = ContextMenuPayload(action: action, id: id)
-        return item
-    }
-
-    @objc private func contextMenuItemChosen(_ sender: NSMenuItem) {
-        guard let payload = sender.representedObject as? ContextMenuPayload else { return }
-        onAction?(payload.action, payload.id)
+        ClosureMenuItem(title: title) { [weak self] in self?.onAction?(action, id) }
     }
 
     private static func swatch(for color: TabColor) -> NSImage {
@@ -146,11 +138,6 @@ final class SidebarViewController: NSViewController {
             return true
         }
     }
-}
-
-private struct ContextMenuPayload {
-    let action: SidebarAction
-    let id: UUID
 }
 
 /// The wash that sinks the tile strip one step behind the spaces column.

@@ -26,6 +26,10 @@ final class MainContentViewController: NSViewController {
         }
     }
 
+    /// Called after the columns were shown or hidden, so whoever owns the
+    /// selection can put the keyboard back where it belongs.
+    var onLayoutChange: (() -> Void)?
+
     /// The three possible left edges of the pane area. Exactly one is active
     /// at a time; `applyLayout()` owns the swap.
     private var panesLeadingToSpaces: NSLayoutConstraint?
@@ -106,6 +110,6 @@ final class MainContentViewController: NSViewController {
         }
 
         view.layoutSubtreeIfNeeded()
-        panes.focusSelectedPane()
+        onLayoutChange?()
     }
 }

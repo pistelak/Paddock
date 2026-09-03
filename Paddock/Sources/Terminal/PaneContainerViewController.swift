@@ -3,10 +3,12 @@ import AppKit
 /// Hosts one `TerminalPaneViewController` per visited tab. All panes stay in
 /// the view hierarchy with their bounds intact; only `isHidden` and surface
 /// visibility change on selection, so libghostty never tears a surface down.
+///
+/// It does not remember which pane is selected: the coordinator owns the
+/// selection and names the pane in every call that needs one.
 @MainActor
 final class PaneContainerViewController: NSViewController {
     private var panes: [UUID: TerminalPaneViewController] = [:]
-    private(set) var selectedID: UUID?
 
     override func loadView() {
         let container = NSView()
@@ -18,11 +20,11 @@ final class PaneContainerViewController: NSViewController {
         panes[id]
     }
 
-    /// Shows the pane for `tab`, creating it on first visit.
+    /// Shows the pane for `tab`, creating it on first visit, and gives it the
+    /// keyboard.
     func select(_ tab: SessionTab, makePane: () -> TerminalPaneViewController) {
         let pane = panes[tab.id] ?? insertPane(makePane(), for: tab.id)
         pane.update(tab: tab)
-        selectedID = tab.id
         for (id, candidate) in panes {
             let visible = id == tab.id
             candidate.view.isHidden = !visible
@@ -43,12 +45,11 @@ final class PaneContainerViewController: NSViewController {
         guard let pane = panes.removeValue(forKey: id) else { return }
         pane.view.removeFromSuperview()
         pane.removeFromParent()
-        if selectedID == id { selectedID = nil }
     }
 
-    func focusSelectedPane() {
-        guard let selectedID else { return }
-        panes[selectedID]?.focusPreferredResponder()
+    /// Puts the keyboard into one pane; a hidden pane declines on its own.
+    func focusPane(_ id: UUID) {
+        panes[id]?.focusPreferredResponder()
     }
 
     private func insertPane(_ pane: TerminalPaneViewController, for id: UUID) -> TerminalPaneViewController {
