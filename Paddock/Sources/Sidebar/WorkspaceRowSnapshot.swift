@@ -11,15 +11,16 @@ import Foundation
 /// It is a plain value, outside the view types, so the diffing rules can be
 /// tested without a window.
 struct WorkspaceRowSnapshot: Equatable, Sendable {
-    let id: String
+    let id: WorkspaceID
     let number: Int
     let label: String
-    /// From `WorkspaceListState.status(of:)`, not `WorkspaceInfo.agentStatus`:
+    /// From `WorkspaceListState.status(of:)`, not `Workspace.agentStatus`:
     /// only the pane-derived status stays live.
     let status: AgentStatus
+    /// `state.focusedID == id`, decided once per render in `rows(for:)`.
     let focused: Bool
 
-    init(id: String, number: Int, label: String, status: AgentStatus, focused: Bool) {
+    init(id: WorkspaceID, number: Int, label: String, status: AgentStatus, focused: Bool) {
         self.id = id
         self.number = number
         self.label = label
@@ -27,13 +28,13 @@ struct WorkspaceRowSnapshot: Equatable, Sendable {
         self.focused = focused
     }
 
-    init(_ workspace: WorkspaceInfo, status: AgentStatus) {
+    init(_ workspace: Workspace, status: AgentStatus, focused: Bool) {
         self.init(
-            id: workspace.workspaceID,
+            id: workspace.id,
             number: workspace.number,
             label: workspace.label,
             status: status,
-            focused: workspace.focused
+            focused: focused
         )
     }
 
@@ -45,6 +46,8 @@ struct WorkspaceRowSnapshot: Equatable, Sendable {
     /// In herdr's order, always: `workspace.moved` / `workspace.reordered`
     /// ship the full ordered list and the column must not second-guess it.
     static func rows(for state: WorkspaceListState) -> [WorkspaceRowSnapshot] {
-        state.workspaces.map { WorkspaceRowSnapshot($0, status: state.status(of: $0.workspaceID)) }
+        state.workspaces.map {
+            WorkspaceRowSnapshot($0, status: state.status(of: $0.id), focused: $0.id == state.focusedID)
+        }
     }
 }

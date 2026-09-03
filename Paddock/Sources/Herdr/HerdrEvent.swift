@@ -61,20 +61,20 @@ enum HerdrEvent: Decodable, Hashable, Sendable {
     /// `workspace_updated` and `workspace_metadata_updated` carry the same
     /// full `WorkspaceInfo` and are treated as one upsert.
     case workspaceUpdated(WorkspaceInfo)
-    case workspaceRenamed(id: String, label: String)
-    case workspaceClosed(id: String)
+    case workspaceRenamed(id: WorkspaceID, label: String)
+    case workspaceClosed(id: WorkspaceID)
     /// Both moved and reordered ship the complete, newly ordered list, so the
     /// reducer replaces its array instead of replaying the move.
     case workspaceMoved([WorkspaceInfo])
     case workspaceReordered([WorkspaceInfo])
-    case workspaceFocused(id: String)
+    case workspaceFocused(id: WorkspaceID)
     case paneCreated(PaneInfo)
-    case paneClosed(paneID: String, workspaceID: String)
-    case paneExited(paneID: String, workspaceID: String)
+    case paneClosed(paneID: PaneID, workspaceID: WorkspaceID)
+    case paneExited(paneID: PaneID, workspaceID: WorkspaceID)
     /// Fires when an agent is detected in a pane and again when it is
     /// released (`released: true`), never in between.
-    case paneAgentDetected(paneID: String, workspaceID: String, agent: String?, released: Bool)
-    case paneAgentStatusChanged(paneID: String, workspaceID: String, status: AgentStatus, agent: String?)
+    case paneAgentDetected(paneID: PaneID, workspaceID: WorkspaceID, agent: String?, released: Bool)
+    case paneAgentStatusChanged(paneID: PaneID, workspaceID: WorkspaceID, status: AgentStatus, agent: String?)
     case other(kind: String)
 
     private enum CodingKeys: String, CodingKey {
@@ -114,40 +114,40 @@ enum HerdrEvent: Decodable, Hashable, Sendable {
             self = .workspaceUpdated(try data.decode(WorkspaceInfo.self, forKey: .workspace))
         case "workspace_renamed":
             self = .workspaceRenamed(
-                id: try data.decode(String.self, forKey: .workspaceID),
+                id: try data.decode(WorkspaceID.self, forKey: .workspaceID),
                 label: try data.decode(String.self, forKey: .label)
             )
         case "workspace_closed":
-            self = .workspaceClosed(id: try data.decode(String.self, forKey: .workspaceID))
+            self = .workspaceClosed(id: try data.decode(WorkspaceID.self, forKey: .workspaceID))
         case "workspace_moved":
             self = .workspaceMoved(try data.decode([WorkspaceInfo].self, forKey: .workspaces))
         case "workspace_reordered":
             self = .workspaceReordered(try data.decode([WorkspaceInfo].self, forKey: .workspaces))
         case "workspace_focused":
-            self = .workspaceFocused(id: try data.decode(String.self, forKey: .workspaceID))
+            self = .workspaceFocused(id: try data.decode(WorkspaceID.self, forKey: .workspaceID))
         case "pane_created":
             self = .paneCreated(try data.decode(PaneInfo.self, forKey: .pane))
         case "pane_closed":
             self = .paneClosed(
-                paneID: try data.decode(String.self, forKey: .paneID),
-                workspaceID: try data.decode(String.self, forKey: .workspaceID)
+                paneID: try data.decode(PaneID.self, forKey: .paneID),
+                workspaceID: try data.decode(WorkspaceID.self, forKey: .workspaceID)
             )
         case "pane_exited":
             self = .paneExited(
-                paneID: try data.decode(String.self, forKey: .paneID),
-                workspaceID: try data.decode(String.self, forKey: .workspaceID)
+                paneID: try data.decode(PaneID.self, forKey: .paneID),
+                workspaceID: try data.decode(WorkspaceID.self, forKey: .workspaceID)
             )
         case "pane_agent_detected":
             self = .paneAgentDetected(
-                paneID: try data.decode(String.self, forKey: .paneID),
-                workspaceID: try data.decode(String.self, forKey: .workspaceID),
+                paneID: try data.decode(PaneID.self, forKey: .paneID),
+                workspaceID: try data.decode(WorkspaceID.self, forKey: .workspaceID),
                 agent: try data.decodeIfPresent(String.self, forKey: .agent),
                 released: try data.decodeIfPresent(Bool.self, forKey: .released) ?? false
             )
         case "pane_agent_status_changed":
             self = .paneAgentStatusChanged(
-                paneID: try data.decode(String.self, forKey: .paneID),
-                workspaceID: try data.decode(String.self, forKey: .workspaceID),
+                paneID: try data.decode(PaneID.self, forKey: .paneID),
+                workspaceID: try data.decode(WorkspaceID.self, forKey: .workspaceID),
                 status: try data.decode(AgentStatus.self, forKey: .agentStatus),
                 agent: try data.decodeIfPresent(String.self, forKey: .agent)
             )

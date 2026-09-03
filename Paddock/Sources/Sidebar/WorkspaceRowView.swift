@@ -117,13 +117,12 @@ final class WorkspaceCellView: NSTableCellView {
 
     /// `dimmed` means the rows are stale — the socket dropped and the column
     /// is showing the last thing herdr said while it reconnects.
-    func apply(_ workspace: WorkspaceInfo, status: AgentStatus, dimmed: Bool) {
-        let snapshot = WorkspaceRowSnapshot(workspace, status: status)
-        title.stringValue = snapshot.displayText
-        dot.status = status
-        toolTip = workspace.label.isEmpty ? snapshot.displayText : workspace.label
+    func apply(_ row: WorkspaceRowSnapshot, dimmed: Bool) {
+        title.stringValue = row.displayText
+        dot.status = row.status
+        toolTip = row.label.isEmpty ? row.displayText : row.label
         alphaValue = dimmed ? 0.5 : 1
-        setAccessibilityLabel("\(snapshot.displayText), \(status.rawValue)")
+        setAccessibilityLabel("\(row.displayText), \(row.status.rawValue)")
     }
 
     func setDimmed(_ dimmed: Bool) {

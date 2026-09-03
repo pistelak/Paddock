@@ -137,7 +137,7 @@ struct WorkspaceStoreHardeningLiveTests {
             }
             // Different sessions never share workspace ids, so this also proves
             // the three stores are not all talking to the same socket.
-            let identifiers = stores.map { Set($0.state.workspaces.map(\.workspaceID)) }
+            let identifiers = stores.map { Set($0.state.workspaces.map(\.id)) }
             for (index, ids) in identifiers.enumerated() {
                 for (other, otherIDs) in identifiers.enumerated() where other != index {
                     #expect(ids.isDisjoint(with: otherIDs), "two stores share workspace ids")

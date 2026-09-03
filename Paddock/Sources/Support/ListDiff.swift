@@ -18,8 +18,10 @@ import Foundation
 ///    still be in their old relative order.
 /// 3. `moves`: one `moveItem(at:to:)` each, applied in order, to finish.
 ///
-/// Ids are assumed unique (herdr workspace ids are). A duplicate cannot crash
-/// this — the plan just may not be minimal.
+/// Ids must be unique. With a duplicate the plan is *wrong*, not merely
+/// non-minimal (`[a, a] → [a]` yields no removal at all), which is why the
+/// only producer of rows — `WorkspaceListState.init(snapshot:)` — refuses a
+/// snapshot that lists a workspace twice before it can get here.
 enum ListDiff {
     /// `remove the row at from, insert it at to` — `NSOutlineView.moveItem`
     /// and `NSTableView.moveRow` have exactly these semantics.

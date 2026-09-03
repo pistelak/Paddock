@@ -19,7 +19,7 @@ final class WorkspaceColumnViewController: NSViewController {
     private static let topInset: CGFloat = 38
 
     /// A row was clicked, or a context-menu entry chosen, for this workspace id.
-    var onAction: ((WorkspaceAction, String) -> Void)?
+    var onAction: ((WorkspaceAction, WorkspaceID) -> Void)?
     /// The header's "+" was clicked; the view is the popover/sheet anchor.
     var onCreate: ((NSView) -> Void)?
 
@@ -41,15 +41,22 @@ final class WorkspaceColumnViewController: NSViewController {
     /// What the outline view has been told about. The data source answers from
     /// these, never from the store, so a store that changes between two
     /// renders can never make the outline's row count disagree with its model.
+    /// A row snapshot carries everything a cell draws, so this is the only
+    /// copy of the render.
     private var renderedRows: [WorkspaceRowSnapshot] = []
-    private var renderedState = WorkspaceListState()
     private var isDimmed = false
 
     /// `NSOutlineView` identifies rows by object identity, so every id needs
     /// one stable instance for as long as it is on screen — `reloadItem` and
     /// `moveItem` look the row up by the object they were handed. A fresh box
     /// per call would make both silently no-ops.
-    private var items: [String: WorkspaceItem] = [:]
+    private var items: [WorkspaceID: WorkspaceItem] = [:]
+
+    /// Handed to the outline when it asks for a row the model does not have —
+    /// unreachable while `ListDiff` keeps the two in step, and a placeholder
+    /// beats trapping in a view that is only ever decoration. Not a
+    /// `WorkspaceItem`: there is no such thing as a workspace with no id.
+    private let placeholderItem = NSObject()
 
     private var transientMessage: String?
     private var transientTask: Task<Void, Never>?
@@ -214,7 +221,6 @@ final class WorkspaceColumnViewController: NSViewController {
         let newRows = WorkspaceRowSnapshot.rows(for: state)
         let oldRows = renderedRows
         renderedRows = newRows
-        renderedState = state
         syncItems(with: newRows)
 
         let changes = ListDiff.changes(from: oldRows.map(\.id), to: newRows.map(\.id))
@@ -269,22 +275,8 @@ final class WorkspaceColumnViewController: NSViewController {
 
     // MARK: - Footer
 
-    /// What the footer says about the connection, or nothing when the rows are
-    /// live and speak for themselves.
-    private func footerText(for connection: WorkspaceStore.ConnectionState?) -> String? {
-        guard let connection else { return "No session selected" }
-        switch connection {
-        case .live: return nil
-        case .idle, .connecting: return "Connecting…"
-        case .sessionNotRunning: return "Session not running"
-        case let .reconnecting(lastError): return "Reconnecting… \(lastError)"
-        case let .unsupportedProtocol(version):
-            return "herdr protocol \(version); expected \(HerdrProtocol.supported)"
-        }
-    }
-
     private func updateFooter(for connection: WorkspaceStore.ConnectionState?) {
-        let text = transientMessage ?? footerText(for: connection)
+        let text = transientMessage ?? ConnectionFooter.text(for: connection)
         footer.stringValue = text ?? ""
         footer.isHidden = text == nil
         // Collapse the whole footer strip, margins included, when it is empty.
@@ -331,7 +323,7 @@ final class WorkspaceColumnViewController: NSViewController {
         return menu
     }
 
-    private func menuItem(_ title: String, action: WorkspaceAction, id: String) -> NSMenuItem {
+    private func menuItem(_ title: String, action: WorkspaceAction, id: WorkspaceID) -> NSMenuItem {
         let item = NSMenuItem(title: title, action: #selector(contextMenuItemChosen(_:)), keyEquivalent: "")
         item.target = self
         item.representedObject = ContextMenuPayload(action: action, workspaceID: id)
@@ -353,11 +345,14 @@ extension WorkspaceColumnViewController: NSOutlineViewDataSource {
     }
 
     func outlineView(_: NSOutlineView, child index: Int, ofItem _: Any?) -> Any {
-        guard renderedRows.indices.contains(index), let item = items[renderedRows[index].id] else {
-            // Unreachable while the model and the outline agree; a placeholder
-            // beats trapping in a view that is only ever decoration.
-            return WorkspaceItem(id: "")
-        }
+        guard renderedRows.indices.contains(index) else { return placeholderItem }
+        let id = renderedRows[index].id
+        if let item = items[id] { return item }
+        // `syncItems` runs before every batch update, so this is belt and
+        // braces: an id the outline asks about is one it should be able to
+        // keep asking about.
+        let item = WorkspaceItem(id: id)
+        items[id] = item
         return item
     }
 
@@ -368,9 +363,7 @@ extension WorkspaceColumnViewController: NSOutlineViewDataSource {
 
 extension WorkspaceColumnViewController: NSOutlineViewDelegate {
     func outlineView(_ outlineView: NSOutlineView, viewFor _: NSTableColumn?, item: Any) -> NSView? {
-        guard let workspaceID = (item as? WorkspaceItem)?.id,
-              let workspace = renderedState.workspace(workspaceID)
-        else { return nil }
+        guard let row = renderedRow(for: item) else { return nil }
 
         let cell = outlineView.makeView(withIdentifier: WorkspaceCellView.identifier, owner: self)
             as? WorkspaceCellView ?? {
@@ -378,16 +371,19 @@ extension WorkspaceColumnViewController: NSOutlineViewDelegate {
                 new.identifier = WorkspaceCellView.identifier
                 return new
             }()
-        cell.apply(workspace, status: renderedState.status(of: workspaceID), dimmed: isDimmed)
+        cell.apply(row, dimmed: isDimmed)
         return cell
     }
 
     func outlineView(_: NSOutlineView, rowViewForItem item: Any) -> NSTableRowView? {
         let row = WorkspaceRowView()
-        if let id = (item as? WorkspaceItem)?.id {
-            row.isFocusedWorkspace = renderedRows.first { $0.id == id }?.focused ?? false
-        }
+        row.isFocusedWorkspace = renderedRow(for: item)?.focused ?? false
         return row
+    }
+
+    private func renderedRow(for item: Any) -> WorkspaceRowSnapshot? {
+        guard let id = (item as? WorkspaceItem)?.id else { return nil }
+        return renderedRows.first { $0.id == id }
     }
 
     func outlineView(_: NSOutlineView, heightOfRowByItem _: Any) -> CGFloat {
@@ -406,14 +402,14 @@ extension WorkspaceColumnViewController: NSOutlineViewDelegate {
 /// the same id is asked for. An `NSObject` subclass gets identity comparison,
 /// which is exactly the guarantee the cache in `items` provides.
 private final class WorkspaceItem: NSObject {
-    let id: String
+    let id: WorkspaceID
 
-    init(id: String) {
+    init(id: WorkspaceID) {
         self.id = id
     }
 }
 
 private struct ContextMenuPayload {
     let action: WorkspaceAction
-    let workspaceID: String
+    let workspaceID: WorkspaceID
 }

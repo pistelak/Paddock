@@ -16,6 +16,10 @@ enum PaddockError: Error, LocalizedError, Equatable {
     case herdrProtocolMismatch(found: Int)
     case herdrTimeout(method: HerdrMethod)
     case herdrConnectionClosed(method: HerdrMethod)
+    /// A `session.snapshot` that contradicts itself (duplicate workspace ids,
+    /// a pane in a workspace that is not listed, a focused id that names no
+    /// workspace). Never applied; reported as a reconnect.
+    case herdrSnapshotInvalid(String)
 
     var errorDescription: String? {
         switch self {
@@ -45,6 +49,8 @@ enum PaddockError: Error, LocalizedError, Equatable {
             "herdr did not answer `\(method)` within \(HerdrSocketClient.requestTimeout)."
         case let .herdrConnectionClosed(method):
             "herdr closed the connection before answering `\(method)`."
+        case let .herdrSnapshotInvalid(reason):
+            "herdr sent an inconsistent snapshot: \(reason)."
         }
     }
 }

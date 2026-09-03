@@ -15,21 +15,22 @@ import Testing
 struct WorkspaceStoreTests {
     // MARK: - Fixtures
 
-    private func ws(_ id: String, number: Int = 1) -> WorkspaceInfo {
-        WorkspaceInfo(
-            workspaceID: id,
-            number: number,
-            label: id.uppercased(),
-            focused: false,
-            paneCount: 1,
-            tabCount: 1,
-            activeTabID: "t-\(id)",
-            agentStatus: .idle
-        )
+    private func ws(_ id: WorkspaceID, number: Int = 1) -> WorkspaceInfo {
+        WorkspaceInfo(workspaceID: id, number: number, label: id.rawValue.uppercased(), focused: false, agentStatus: .idle)
     }
 
-    private func pane(_ id: String, in workspaceID: String) -> PaneInfo {
-        PaneInfo(paneID: id, workspaceID: workspaceID, tabID: "t-\(workspaceID)", agentStatus: .idle, focused: false)
+    private func pane(_ id: PaneID, in workspaceID: WorkspaceID) -> PaneInfo {
+        PaneInfo(paneID: id, workspaceID: workspaceID, agentStatus: .idle)
+    }
+
+    /// Through the real mapper, so the state is one the store could hold; the
+    /// first workspace is the focused one, as in any non-empty herdr session.
+    private func state(workspaces: [WorkspaceInfo], panes: [PaneInfo] = []) throws -> WorkspaceListState {
+        try WorkspaceListState(snapshot: SessionSnapshot(
+            workspaces: workspaces,
+            panes: panes,
+            focusedWorkspaceID: workspaces.first?.workspaceID
+        ))
     }
 
     // MARK: - Subscriptions
@@ -39,8 +40,8 @@ struct WorkspaceStoreTests {
         #expect(subscriptions == HerdrSubscription.workspaceKinds + HerdrSubscription.paneKinds)
     }
 
-    @Test func subscriptionsAddOnePerPaneInSortedOrder() {
-        let state = WorkspaceListState(
+    @Test func subscriptionsAddOnePerPaneInSortedOrder() throws {
+        let state = try state(
             workspaces: [ws("w1"), ws("w2", number: 2)],
             panes: [pane("p3", in: "w2"), pane("p1", in: "w1"), pane("p2", in: "w1")]
         )
@@ -60,12 +61,12 @@ struct WorkspaceStoreTests {
     /// The loop compares two lists to decide whether to reconnect, so the same
     /// pane set must always produce the very same array — however the panes
     /// happened to be inserted.
-    @Test func subscriptionsAreStableAcrossInsertionOrder() {
-        let first = WorkspaceListState(
+    @Test func subscriptionsAreStableAcrossInsertionOrder() throws {
+        let first = try state(
             workspaces: [ws("w1")],
             panes: [pane("b", in: "w1"), pane("a", in: "w1")]
         )
-        let second = WorkspaceListState(
+        let second = try state(
             workspaces: [ws("w1")],
             panes: [pane("a", in: "w1"), pane("b", in: "w1")]
         )
@@ -74,8 +75,8 @@ struct WorkspaceStoreTests {
 
     /// A workspace with no panes still gets a row; it just has no per-pane
     /// subscription to add.
-    @Test func workspacesWithoutPanesAddNoSubscriptions() {
-        let state = WorkspaceListState(workspaces: [ws("w1")], panes: [])
+    @Test func workspacesWithoutPanesAddNoSubscriptions() throws {
+        let state = try state(workspaces: [ws("w1")])
         #expect(
             WorkspaceStore.subscriptions(for: state)
                 == HerdrSubscription.workspaceKinds + HerdrSubscription.paneKinds
@@ -114,32 +115,29 @@ struct WorkspaceStoreTests {
         #expect(WorkspaceStore.connectionState(for: error) == .sessionNotRunning)
     }
 
-    @Test func anRPCErrorReadsAsReconnectingWithItsMessage() {
+    @Test func anRPCErrorReadsAsReconnectingAndKeepsTheError() {
         let error = PaddockError.herdrRPC(method: .ping, code: "invalid_request", message: "nope")
-        guard case let .reconnecting(message) = WorkspaceStore.connectionState(for: error) else {
-            Issue.record("expected .reconnecting")
-            return
-        }
-        #expect(message.contains("nope"), Comment(rawValue: message))
+        #expect(WorkspaceStore.connectionState(for: error) == .reconnecting(.failed(error)))
     }
 
     @Test func aTimeoutReadsAsReconnecting() {
-        let state = WorkspaceStore.connectionState(for: PaddockError.herdrTimeout(method: .sessionSnapshot))
-        guard case let .reconnecting(message) = state else {
-            Issue.record("expected .reconnecting")
-            return
-        }
-        #expect(!message.isEmpty)
+        let error = PaddockError.herdrTimeout(method: .sessionSnapshot)
+        #expect(WorkspaceStore.connectionState(for: error) == .reconnecting(.failed(error)))
+    }
+
+    @Test func anInvalidSnapshotReadsAsReconnecting() {
+        let error = PaddockError.herdrSnapshotInvalid("workspace w1 is listed twice")
+        #expect(WorkspaceStore.connectionState(for: error) == .reconnecting(.failed(error)))
     }
 
     /// A decoding failure is a real fault but still only a reconnect: the rows
-    /// stay on screen and the next snapshot may well decode.
+    /// stay on screen and the next snapshot may well decode. It is not one of
+    /// Paddock's own errors, so only its description survives.
     @Test func aNonPaddockErrorStillReadsAsReconnecting() {
-        struct Boom: Error {}
-        guard case .reconnecting = WorkspaceStore.connectionState(for: Boom()) else {
-            Issue.record("expected .reconnecting")
-            return
+        struct Boom: Error, LocalizedError {
+            var errorDescription: String? { "boom" }
         }
+        #expect(WorkspaceStore.connectionState(for: Boom()) == .reconnecting(.unexpected("boom")))
     }
 
     @Test func onlyConnectedStatesCountAsConnected() {
@@ -148,7 +146,7 @@ struct WorkspaceStoreTests {
         #expect(!WorkspaceStore.ConnectionState.idle.isConnected)
         #expect(!WorkspaceStore.ConnectionState.connecting.isConnected)
         #expect(!WorkspaceStore.ConnectionState.sessionNotRunning.isConnected)
-        #expect(!WorkspaceStore.ConnectionState.reconnecting(lastError: "x").isConnected)
+        #expect(!WorkspaceStore.ConnectionState.reconnecting(.streamEnded).isConnected)
     }
 
     // MARK: - Lifecycle

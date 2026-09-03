@@ -23,7 +23,7 @@ struct WorkspaceStoreMachineTests {
         defer { store.stop() }
         try await waitUntil { store.connection == .live }
 
-        #expect(store.state.workspaces.map(\.workspaceID) == ["w1"])
+        #expect(store.state.workspaces.map(\.id) == ["w1"])
         #expect(store.state.focusedID == "w1")
         let requests = await herdr.requests
         #expect(requests == [.ping, .sessionSnapshot], "ping, then subscribe, then one snapshot")
@@ -155,7 +155,7 @@ struct WorkspaceStoreMachineTests {
         try await waitUntil { store.connection == .live }
 
         #expect(await herdr.subscriptions.count == 2, "a fresh events connection was opened")
-        #expect(store.state.workspaces.map(\.workspaceID) == ["w1"], "and its snapshot landed")
+        #expect(store.state.workspaces.map(\.id) == ["w1"], "and its snapshot landed")
         let failures = await herdr.requestCount(of: .sessionSnapshot)
         #expect(failures == 1 + WorkspaceStore.maximumSnapshotFailures + 1)
     }
@@ -167,8 +167,8 @@ struct WorkspaceStoreMachineTests {
         try await waitUntil { store.connection == .live }
 
         await herdr.endStreams()
-        try await waitUntil { store.connection == .reconnecting(lastError: "herdr closed the connection.") }
-        #expect(store.state.workspaces.map(\.workspaceID) == ["w1"], "rows survive, dimmed")
+        try await waitUntil { store.connection == .reconnecting(.streamEnded) }
+        #expect(store.state.workspaces.map(\.id) == ["w1"], "rows survive, dimmed")
 
         // Backoff 0.5 s, then the 1 s connection floor from the first attempt.
         try await waitUntil { clock.pendingSleepers == 1 }
@@ -248,7 +248,7 @@ struct WorkspaceStoreMachineTests {
         clock.advance(by: .seconds(10))
         try await Task.sleep(for: .milliseconds(50))
         #expect(notifications == afterStop, "no onChange after stop()")
-        #expect(store.state.workspaces.map(\.workspaceID) == ["w1"], "rows are kept for the next start")
+        #expect(store.state.workspaces.map(\.id) == ["w1"], "rows are kept for the next start")
     }
 
     @Test func onChangeIsCoalescedToOncePerTurn() async throws {

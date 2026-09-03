@@ -61,9 +61,9 @@ struct WorkspaceWorktreeInfo: Codable, Hashable, Sendable {
 /// row draws, so they are required. `paneCount`, `tabCount` and `activeTabID`
 /// are kept for completeness but nothing reads them, so they are optional.
 struct WorkspaceInfo: Codable, Hashable, Sendable, Identifiable {
-    var id: String { workspaceID }
+    var id: WorkspaceID { workspaceID }
 
-    let workspaceID: String
+    let workspaceID: WorkspaceID
     let number: Int
     let label: String
     let focused: Bool
@@ -88,7 +88,7 @@ struct WorkspaceInfo: Codable, Hashable, Sendable, Identifiable {
     }
 
     init(
-        workspaceID: String,
+        workspaceID: WorkspaceID,
         number: Int,
         label: String,
         focused: Bool,
@@ -121,10 +121,10 @@ struct WorkspaceInfo: Codable, Hashable, Sendable, Identifiable {
 /// the subscription list, the last is the only live status source. The rest
 /// is optional because nothing reads it yet.
 struct PaneInfo: Codable, Hashable, Sendable, Identifiable {
-    var id: String { paneID }
+    var id: PaneID { paneID }
 
-    let paneID: String
-    let workspaceID: String
+    let paneID: PaneID
+    let workspaceID: WorkspaceID
     let tabID: String?
     let agent: String?
     let agentStatus: AgentStatus
@@ -144,8 +144,8 @@ struct PaneInfo: Codable, Hashable, Sendable, Identifiable {
     }
 
     init(
-        paneID: String,
-        workspaceID: String,
+        paneID: PaneID,
+        workspaceID: WorkspaceID,
         tabID: String? = nil,
         agent: String? = nil,
         agentStatus: AgentStatus,
@@ -201,7 +201,7 @@ struct SessionSnapshot: Decodable, Hashable, Sendable {
     let protocolVersion: Int?
     let workspaces: [WorkspaceInfo]
     let panes: [PaneInfo]
-    let focusedWorkspaceID: String?
+    let focusedWorkspaceID: WorkspaceID?
 
     enum CodingKeys: String, CodingKey {
         case version
@@ -209,6 +209,20 @@ struct SessionSnapshot: Decodable, Hashable, Sendable {
         case workspaces
         case panes
         case focusedWorkspaceID = "focused_workspace_id"
+    }
+
+    init(
+        version: String? = nil,
+        protocolVersion: Int? = nil,
+        workspaces: [WorkspaceInfo],
+        panes: [PaneInfo] = [],
+        focusedWorkspaceID: WorkspaceID? = nil
+    ) {
+        self.version = version
+        self.protocolVersion = protocolVersion
+        self.workspaces = workspaces
+        self.panes = panes
+        self.focusedWorkspaceID = focusedWorkspaceID
     }
 }
 

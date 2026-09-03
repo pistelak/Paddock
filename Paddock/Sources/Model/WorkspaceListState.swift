@@ -18,6 +18,31 @@ extension AgentStatus {
     }
 }
 
+/// One space as the column knows it: the part of a `WorkspaceInfo` that a row
+/// draws, and nothing that only the wire cares about.
+///
+/// Deliberately without a `focused` flag. Which space is focused is one fact
+/// about the *list*, so it is stored once on `WorkspaceListState` and a row
+/// asks `state.focusedID == id`; a flag per row could only ever disagree
+/// with it.
+struct Workspace: Hashable, Sendable, Identifiable {
+    let id: WorkspaceID
+    let number: Int
+    let label: String
+    let agentStatus: AgentStatus
+
+    init(id: WorkspaceID, number: Int, label: String, agentStatus: AgentStatus) {
+        self.id = id
+        self.number = number
+        self.label = label
+        self.agentStatus = agentStatus
+    }
+
+    init(_ info: WorkspaceInfo) {
+        self.init(id: info.workspaceID, number: info.number, label: info.label, agentStatus: info.agentStatus)
+    }
+}
+
 /// The part of a pane the spaces column needs.
 ///
 /// Panes are tracked at all because agent status only ever arrives through the
@@ -28,11 +53,11 @@ extension AgentStatus {
 struct PaneSummary: Equatable, Hashable, Sendable {
     /// Immutable: a pane never migrates between workspaces; herdr closes and
     /// recreates it instead.
-    let workspaceID: String
+    let workspaceID: WorkspaceID
     var agent: String?
     var agentStatus: AgentStatus
 
-    init(workspaceID: String, agent: String? = nil, agentStatus: AgentStatus) {
+    init(workspaceID: WorkspaceID, agent: String? = nil, agentStatus: AgentStatus) {
         self.workspaceID = workspaceID
         self.agent = agent
         self.agentStatus = agentStatus
@@ -44,59 +69,94 @@ struct PaneSummary: Equatable, Hashable, Sendable {
 }
 
 /// Everything the spaces column draws for one herdr session: the ordered
-/// workspaces exactly as herdr lists them, plus the panes that supply their
-/// live agent status.
+/// workspaces exactly as herdr lists them, which one is focused, plus the panes
+/// that supply their live agent status.
 ///
 /// The type is a plain value so the store can diff two versions with `==` and
 /// skip a render. Order is herdr's — never sorted here — because
 /// `workspace.moved` / `workspace.reordered` ship the full ordered list.
+///
+/// A state is only ever built from a `session.snapshot`, through
+/// `init(snapshot:)`, which is where herdr's wire shape is *checked* as well
+/// as translated: duplicate ids, a pane in an unlisted workspace or a focused
+/// id naming no workspace are refused rather than drawn, because `ListDiff`
+/// and the outline view both assume unique rows and one pill.
 struct WorkspaceListState: Equatable, Sendable {
-    var workspaces: [WorkspaceInfo]
+    var workspaces: [Workspace]
     /// Keyed by pane id, the identifier the per-pane subscription needs.
-    var panes: [String: PaneSummary]
+    var panes: [PaneID: PaneSummary]
+    /// Stored once, for the whole list. `nil` for an empty list.
+    var focusedID: WorkspaceID?
 
     init() {
         workspaces = []
         panes = [:]
+        focusedID = nil
+    }
+
+    init(workspaces: [Workspace], panes: [PaneID: PaneSummary] = [:], focusedID: WorkspaceID? = nil) {
+        self.workspaces = workspaces
+        self.panes = panes
+        self.focusedID = focusedID
     }
 
     /// Replace-all from a `session.snapshot`, the authoritative starting point.
     ///
-    /// `focused_workspace_id` is deliberately ignored: the per-workspace
-    /// `focused` flag says the same thing, and keeping one source of truth
-    /// means `focusedID` can be derived instead of maintained.
-    init(snapshot: SessionSnapshot) {
-        self.init(workspaces: snapshot.workspaces, panes: snapshot.panes)
-    }
+    /// herdr says which space is focused twice — a top-level
+    /// `focused_workspace_id` and a `focused` flag on the rows. The top-level
+    /// id wins and has to name a listed workspace. Without it the flags are
+    /// the fallback, and then exactly one row must carry one: a non-empty
+    /// list with no focused row, or with two, contradicts itself and there is
+    /// no basis for picking, so it is refused like any other inconsistency.
+    /// An empty list has no focus, and says so with `nil`.
+    init(snapshot: SessionSnapshot) throws {
+        var seen = Set<WorkspaceID>()
+        for workspace in snapshot.workspaces {
+            guard seen.insert(workspace.workspaceID).inserted else {
+                throw PaddockError.herdrSnapshotInvalid("workspace \(workspace.workspaceID) is listed twice")
+            }
+        }
+        for pane in snapshot.panes where !seen.contains(pane.workspaceID) {
+            throw PaddockError.herdrSnapshotInvalid("pane \(pane.paneID) belongs to unlisted workspace \(pane.workspaceID)")
+        }
 
-    /// Replace-all from a `workspace.list` resync (panes optional, because
-    /// `workspace.list` does not carry them; the store keeps its pane set).
-    init(workspaces: [WorkspaceInfo], panes: [PaneInfo] = []) {
-        self.workspaces = workspaces
-        self.panes = Dictionary(
-            panes.map { ($0.paneID, PaneSummary($0)) },
-            uniquingKeysWith: { _, last in last }
+        let focusedID: WorkspaceID?
+        if let authoritative = snapshot.focusedWorkspaceID {
+            guard seen.contains(authoritative) else {
+                throw PaddockError.herdrSnapshotInvalid("focused workspace \(authoritative) is not listed")
+            }
+            focusedID = authoritative
+        } else if snapshot.workspaces.isEmpty {
+            focusedID = nil
+        } else {
+            let flagged = snapshot.workspaces.filter(\.focused).map(\.workspaceID)
+            guard flagged.count == 1 else {
+                throw PaddockError.herdrSnapshotInvalid("expected exactly one focused workspace, found \(flagged.count)")
+            }
+            focusedID = flagged[0]
+        }
+
+        self.init(
+            workspaces: snapshot.workspaces.map(Workspace.init),
+            panes: Dictionary(
+                snapshot.panes.map { ($0.paneID, PaneSummary($0)) },
+                uniquingKeysWith: { _, last in last }
+            ),
+            focusedID: focusedID
         )
-    }
-
-    /// Derived, not stored: the `focused` flag on the rows is what the column
-    /// draws, so a second stored copy could only ever disagree with it. Every
-    /// state comes straight from a snapshot, which flags exactly one row.
-    var focusedID: String? {
-        workspaces.first(where: \.focused)?.workspaceID
     }
 
     /// Sorted so that two equal pane sets always produce the same subscription
     /// list and the store can compare them to decide whether to reconnect.
-    var paneIDs: [String] {
+    var paneIDs: [PaneID] {
         panes.keys.sorted()
     }
 
-    func index(of workspaceID: String) -> Int? {
-        workspaces.firstIndex { $0.workspaceID == workspaceID }
+    func index(of workspaceID: WorkspaceID) -> Int? {
+        workspaces.firstIndex { $0.id == workspaceID }
     }
 
-    func workspace(_ workspaceID: String) -> WorkspaceInfo? {
+    func workspace(_ workspaceID: WorkspaceID) -> Workspace? {
         index(of: workspaceID).map { workspaces[$0] }
     }
 
@@ -104,9 +164,9 @@ struct WorkspaceListState: Equatable, Sendable {
     ///
     /// Pane-derived (highest `displayPriority` among its panes) as soon as any
     /// pane of that workspace is known, because the snapshot's panes carry the
-    /// finer-grained status. Falls back to `WorkspaceInfo.agentStatus` for a
-    /// workspace whose panes are not listed.
-    func status(of workspaceID: String) -> AgentStatus {
+    /// finer-grained status. Falls back to the workspace's own `agentStatus`
+    /// for a workspace whose panes are not listed.
+    func status(of workspaceID: WorkspaceID) -> AgentStatus {
         var derived: AgentStatus?
         for pane in panes.values where pane.workspaceID == workspaceID {
             if pane.agentStatus.displayPriority > (derived?.displayPriority ?? -1) {
@@ -120,7 +180,7 @@ struct WorkspaceListState: Equatable, Sendable {
     var aggregateStatus: AgentStatus {
         var result = AgentStatus.unknown
         for workspace in workspaces {
-            let status = status(of: workspace.workspaceID)
+            let status = status(of: workspace.id)
             if status.displayPriority > result.displayPriority {
                 result = status
             }

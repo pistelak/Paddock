@@ -51,7 +51,7 @@ extension WorkspaceStore {
                     consecutiveResubscribes = 0
                 case .streamEnded:
                     guard !Task.isCancelled else { return }
-                    setConnection(.reconnecting(lastError: Self.streamEndedMessage))
+                    setConnection(.reconnecting(.streamEnded))
                 }
             } catch {
                 guard !Task.isCancelled else { return }
@@ -63,8 +63,6 @@ extension WorkspaceStore {
             do { try await clock.sleep(for: .seconds(backoff.next())) } catch { return }
         }
     }
-
-    private static let streamEndedMessage = "herdr closed the connection."
 
     /// Sleeps out whatever is left of `minimumTimeBetweenConnections` since the
     /// previous attempt started. Returns `false` if the task was cancelled
@@ -190,17 +188,22 @@ extension WorkspaceStore {
             + state.paneIDs.map { .paneAgentStatusChanged(paneID: $0) }
     }
 
-    /// How a failed attempt reads in the footer.
+    /// What a failed attempt means.
     ///
     /// A missing socket is the ordinary case, not a fault: the session simply
     /// has not been started, and it gets its own state so the column can say
-    /// so instead of showing a POSIX message.
+    /// so instead of showing a POSIX message. Everything else is a reconnect
+    /// that remembers *why*, as a value the footer renders and tests compare.
     nonisolated static func connectionState(for error: Error) -> ConnectionState {
-        if let paddock = error as? PaddockError, case .herdrSocketUnavailable = paddock {
+        guard let paddock = error as? PaddockError else {
+            return .reconnecting(.unexpected(
+                (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            ))
+        }
+        if case .herdrSocketUnavailable = paddock {
             return .sessionNotRunning
         }
-        let message = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
-        return .reconnecting(lastError: message)
+        return .reconnecting(.failed(paddock))
     }
 
     /// The reconnect schedule, in seconds: 0.5, 1, 2, 4, then 5 for ever.

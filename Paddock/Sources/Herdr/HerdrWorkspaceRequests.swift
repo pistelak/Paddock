@@ -4,13 +4,13 @@ import Foundation
 /// `workspace.focus` and `workspace.close` both take the schema's
 /// `WorkspaceTarget`.
 struct WorkspaceTargetParams: Encodable, Sendable {
-    let workspaceID: String
+    let workspaceID: WorkspaceID
 
     enum CodingKeys: String, CodingKey {
         case workspaceID = "workspace_id"
     }
 
-    init(_ workspaceID: String) {
+    init(_ workspaceID: WorkspaceID) {
         self.workspaceID = workspaceID
     }
 }
@@ -38,7 +38,7 @@ struct WorkspaceCreateParams: Encodable, Sendable {
 
 /// Params of `workspace.rename`.
 struct WorkspaceRenameParams: Encodable, Sendable {
-    let workspaceID: String
+    let workspaceID: WorkspaceID
     let label: String
 
     enum CodingKeys: String, CodingKey {
@@ -46,7 +46,7 @@ struct WorkspaceRenameParams: Encodable, Sendable {
         case label
     }
 
-    init(workspaceID: String, label: String) {
+    init(workspaceID: WorkspaceID, label: String) {
         self.workspaceID = workspaceID
         self.label = label
     }

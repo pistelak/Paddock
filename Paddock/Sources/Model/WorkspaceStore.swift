@@ -53,7 +53,7 @@ final class WorkspaceStore {
         case connecting
         case live
         /// Keep the last rows, draw them dimmed, retry on the backoff.
-        case reconnecting(lastError: String)
+        case reconnecting(ReconnectReason)
         /// No socket at the path: the session has not been started yet.
         case sessionNotRunning
         /// Connected and usable, but `ping` reported another protocol version.
@@ -66,6 +66,20 @@ final class WorkspaceStore {
             case .idle, .connecting, .reconnecting, .sessionNotRunning: false
             }
         }
+    }
+
+    /// Why a connection is being retried. A model value, not a sentence: the
+    /// footer (`ConnectionFooter`) turns it into words, tests compare cases,
+    /// and a later UI can tell a timeout from a rejected request.
+    enum ReconnectReason: Equatable, Sendable {
+        /// herdr closed the socket — the session stopped or the daemon
+        /// restarted. Not a fault.
+        case streamEnded
+        /// A request failed with one of Paddock's own errors.
+        case failed(PaddockError)
+        /// Something outside Paddock's vocabulary (a decoding error, a POSIX
+        /// error the socket layer did not map); its description is all there is.
+        case unexpected(String)
     }
 
     /// How many snapshot failures in a row the event loop tolerates while the
@@ -200,7 +214,7 @@ final class WorkspaceStore {
     // comes back down the stream, so a click and a change made in the TUI take
     // exactly the same path. Errors are rethrown for the caller to show.
 
-    func focus(_ workspaceID: String) async throws {
+    func focus(_ workspaceID: WorkspaceID) async throws {
         try await transport.send(.workspaceFocus, params: WorkspaceTargetParams(workspaceID))
     }
 
@@ -210,11 +224,11 @@ final class WorkspaceStore {
         try await transport.send(.workspaceCreate, params: WorkspaceCreateParams(label: label, focus: true))
     }
 
-    func rename(_ workspaceID: String, to label: String) async throws {
+    func rename(_ workspaceID: WorkspaceID, to label: String) async throws {
         try await transport.send(.workspaceRename, params: WorkspaceRenameParams(workspaceID: workspaceID, label: label))
     }
 
-    func close(_ workspaceID: String) async throws {
+    func close(_ workspaceID: WorkspaceID) async throws {
         try await transport.send(.workspaceClose, params: WorkspaceTargetParams(workspaceID))
     }
 
@@ -235,7 +249,9 @@ final class WorkspaceStore {
         let clock = self.clock
         lastSnapshotStart = Self.now(of: clock)
         let result: SessionSnapshotResult = try await transport.request(.sessionSnapshot)
-        apply(WorkspaceListState(snapshot: result.snapshot))
+        // The mapper checks the snapshot as well as translating it; a snapshot
+        // that contradicts itself is a failed request, never a drawn one.
+        apply(try WorkspaceListState(snapshot: result.snapshot))
         return state
     }
 

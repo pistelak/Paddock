@@ -41,7 +41,7 @@ enum WorkspaceEventPolicy {
     static let resyncKinds: Set<HerdrEventKind> = Set(
         (HerdrSubscription.workspaceKinds
             + HerdrSubscription.paneKinds
-            + [.paneAgentStatusChanged(paneID: "")])
+            + [.paneAgentStatusChanged(paneID: "any")])
             .map(\.eventKind)
     )
 

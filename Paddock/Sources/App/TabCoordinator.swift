@@ -243,7 +243,7 @@ final class TabCoordinator {
         selectedTabID.flatMap { workspaceStores[$0] }
     }
 
-    private func handle(_ action: WorkspaceAction, workspaceID: String) {
+    private func handle(_ action: WorkspaceAction, workspaceID: WorkspaceID) {
         guard let workspaces = selectedWorkspaceStore else { return }
         switch action {
         case .focus:
@@ -268,7 +268,7 @@ final class TabCoordinator {
         }
     }
 
-    private func renameSpace(_ workspaceID: String, in workspaces: WorkspaceStore) async {
+    private func renameSpace(_ workspaceID: WorkspaceID, in workspaces: WorkspaceStore) async {
         guard let workspace = workspaces.state.workspace(workspaceID) else { return }
         guard let raw = await AlertPresenter.promptForText(
             title: "Rename Space",
@@ -287,7 +287,7 @@ final class TabCoordinator {
         }
     }
 
-    private func closeSpace(_ workspaceID: String, in workspaces: WorkspaceStore) async {
+    private func closeSpace(_ workspaceID: WorkspaceID, in workspaces: WorkspaceStore) async {
         guard let workspace = workspaces.state.workspace(workspaceID) else { return }
         let confirmed = await AlertPresenter.confirm(
             title: "Close space “\(Self.displayName(of: workspace))”?",
@@ -306,7 +306,7 @@ final class TabCoordinator {
 
     /// A space herdr has no label for is known by its number, exactly as the
     /// row draws it.
-    private static func displayName(of workspace: WorkspaceInfo) -> String {
+    private static func displayName(of workspace: Workspace) -> String {
         workspace.label.isEmpty ? "\(workspace.number)" : workspace.label
     }
 

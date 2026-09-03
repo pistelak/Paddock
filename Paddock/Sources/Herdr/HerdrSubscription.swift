@@ -25,7 +25,7 @@ enum HerdrSubscription: Encodable, Hashable, Sendable {
     case paneClosed
     case paneExited
     case paneAgentDetected
-    case paneAgentStatusChanged(paneID: String)
+    case paneAgentStatusChanged(paneID: PaneID)
 
     /// The wire value of the subscription's `type`.
     var type: String {
@@ -85,7 +85,7 @@ enum HerdrSubscription: Encodable, Hashable, Sendable {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(type, forKey: .type)
         if case let .paneAgentStatusChanged(paneID) = self {
-            try container.encode(paneID, forKey: .paneID)
+            try container.encode(paneID.rawValue, forKey: .paneID)
         }
     }
 }

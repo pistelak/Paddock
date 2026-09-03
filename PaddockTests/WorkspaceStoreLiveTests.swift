@@ -45,7 +45,6 @@ struct WorkspaceStoreLiveTests {
         #expect(store.connection == .live, "protocol \(HerdrProtocol.supported) was expected")
         #expect(!store.state.workspaces.isEmpty)
         #expect(store.state.focusedID != nil, "herdr always has exactly one focused space")
-        #expect(store.state.workspaces.filter(\.focused).count == 1)
         // Panes are what the per-pane status subscriptions are built from; a
         // live session always has at least one.
         #expect(!store.state.paneIDs.isEmpty)
@@ -106,23 +105,22 @@ struct WorkspaceStoreLiveTests {
         await closeThrowawaySpaces(in: store)
 
         let label = Self.throwawayPrefix + String(UInt32.random(in: 0 ... .max))
-        let existing = Set(store.state.workspaces.map(\.workspaceID))
+        let existing = Set(store.state.workspaces.map(\.id))
         try await store.create(label: label)
 
         do {
             try await waitUntil(timeout: .seconds(10)) {
-                store.state.workspaces.contains { !existing.contains($0.workspaceID) && $0.label == label }
+                store.state.workspaces.contains { !existing.contains($0.id) && $0.label == label }
             }
             let workspaceID = try #require(
-                store.state.workspaces.first { !existing.contains($0.workspaceID) && $0.label == label }
-            ).workspaceID
+                store.state.workspaces.first { !existing.contains($0.id) && $0.label == label }
+            ).id
 
             // `create` asks for focus, so the pill has already moved; calling
             // `focus` again is exactly what a row click does and has to be
             // idempotent.
             try await store.focus(workspaceID)
             try await waitUntil(timeout: .seconds(10)) { store.state.focusedID == workspaceID }
-            #expect(store.state.workspaces.filter(\.focused).count == 1)
 
             try await store.rename(workspaceID, to: label + "-renamed")
             try await waitUntil(timeout: .seconds(10)) {
@@ -132,7 +130,7 @@ struct WorkspaceStoreLiveTests {
             try await store.close(workspaceID)
             try await waitUntil(timeout: .seconds(10)) { store.state.workspace(workspaceID) == nil }
             #expect(
-                Set(store.state.workspaces.map(\.workspaceID)) == existing,
+                Set(store.state.workspaces.map(\.id)) == existing,
                 "closing the throwaway space leaves the session exactly as it was found"
             )
         } catch {
@@ -152,7 +150,7 @@ struct WorkspaceStoreLiveTests {
         _ = try? await store.refreshFromSnapshot()
         let leftovers = store.state.workspaces
             .filter { $0.label.hasPrefix(Self.throwawayPrefix) }
-            .map(\.workspaceID)
+            .map(\.id)
         for workspaceID in leftovers {
             try? await store.close(workspaceID)
         }
