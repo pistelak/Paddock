@@ -48,7 +48,7 @@ final class TabCoordinator {
     func start() {
         store.onChange = { [weak self] in self?.refreshPresentation() }
         store.onSaveFailure = { [weak self] error in
-            AlertPresenter.present(error, in: self?.window)
+            Task { await AlertPresenter.present(error, in: self?.window) }
         }
         sidebar.onAction = { [weak self] action, id in self?.handle(action, tabID: id) }
         sidebar.onAdd = { [weak self] anchor in self?.showAddMenu(from: anchor) }
@@ -227,7 +227,7 @@ final class TabCoordinator {
         do {
             try await herdr.stopSession(tab.sessionName)
         } catch {
-            AlertPresenter.present(error, in: window)
+            await AlertPresenter.present(error, in: window)
         }
     }
 
@@ -283,7 +283,7 @@ final class TabCoordinator {
         do {
             try await workspaces.rename(workspaceID, to: label)
         } catch {
-            AlertPresenter.present(error, in: window)
+            await AlertPresenter.present(error, in: window)
         }
     }
 
@@ -300,7 +300,7 @@ final class TabCoordinator {
         do {
             try await workspaces.close(workspaceID)
         } catch {
-            AlertPresenter.present(error, in: window)
+            await AlertPresenter.present(error, in: window)
         }
     }
 
@@ -323,7 +323,7 @@ final class TabCoordinator {
         do {
             try await workspaces.create(label: label.isEmpty ? nil : label)
         } catch {
-            AlertPresenter.present(error, in: window)
+            await AlertPresenter.present(error, in: window)
         }
     }
 
@@ -362,7 +362,7 @@ final class TabCoordinator {
                 .map(\.name)
                 .filter { store.tab(forSession: $0) == nil }
         } catch {
-            AlertPresenter.present(error, in: window)
+            await AlertPresenter.present(error, in: window)
             return []
         }
     }
@@ -384,7 +384,7 @@ final class TabCoordinator {
             do {
                 addTab(try SessionName(raw))
             } catch {
-                AlertPresenter.present(error, in: window)
+                await AlertPresenter.present(error, in: window)
             }
         }
     }
@@ -394,7 +394,7 @@ final class TabCoordinator {
             let tab = try store.addTab(sessionName: name)
             select(tab)
         } catch {
-            AlertPresenter.present(error, in: window)
+            Task { await AlertPresenter.present(error, in: window) }
         }
     }
 }

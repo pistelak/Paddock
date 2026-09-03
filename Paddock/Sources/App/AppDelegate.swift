@@ -1,6 +1,10 @@
 import AppKit
 import GhosttyTerminal
 
+/// Paddock is a single-window app: closing the window quits, window tabbing
+/// is off, and the menu offers no second window. Everything window-scoped
+/// (the selected tab, the two hidden-column flags) is therefore stored
+/// app-wide on purpose.
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var mainWindowController: MainWindowController?
@@ -37,13 +41,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: - Startup
 
+    /// The window comes first, before anything that can wait on the outside
+    /// world: locating herdr may fall back to a login shell, and a slow
+    /// `.zshrc` must not leave the user looking at nothing.
     private func bootstrap() async {
         let windowController = MainWindowController()
         mainWindowController = windowController
+        windowController.showWindow(nil)
+        NSApp.activate()
 
         guard let herdrExecutable = await HerdrLocator.locate() else {
-            windowController.showWindow(nil)
-            AlertPresenter.present(PaddockError.herdrNotFound, in: windowController.window)
+            await AlertPresenter.present(PaddockError.herdrNotFound, in: windowController.window)
             return
         }
 
@@ -52,7 +60,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let coordinator = TabCoordinator(store: store, host: host, herdrExecutable: herdrExecutable)
         self.coordinator = coordinator
 
-        await loadOrSeed(store, using: coordinator.herdr, window: windowController.window)
+        let notices = await loadOrSeed(store, using: coordinator.herdr)
 
         windowController.install(MainContentViewController(
             sidebar: coordinator.sidebar,
@@ -60,12 +68,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             panes: coordinator.panes
         ))
         coordinator.window = windowController.window
-        windowController.showWindow(nil)
-        NSApp.activate()
         coordinator.start()
 
+        // Told after the content is up, so the user reads them against the
+        // tabs they describe rather than an empty window.
+        for notice in notices {
+            await AlertPresenter.presentWarning(title: notice.title, message: notice.message, in: windowController.window)
+        }
         if let issue = host.configurationIssue {
-            AlertPresenter.presentWarning(
+            await AlertPresenter.presentWarning(
                 title: "Ghostty config not applied",
                 message: "\(issue)\n\n\(GhosttyConfigLocator.themesSymlinkHint)\n\nRunning with libghostty defaults.",
                 in: windowController.window
@@ -73,21 +84,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// Loads the saved tabs, or seeds them from herdr on first launch. Every
-    /// failure along the way is shown; the app still starts with a
-    /// `default` tab so there is always something to attach to.
-    private func loadOrSeed(_ store: TabStore, using herdr: HerdrCLI, window: NSWindow?) async {
+    /// Something the user should be told once the window is on screen.
+    struct Notice: Equatable, Sendable {
+        let title: String
+        let message: String
+    }
+
+    /// Loads the saved tabs, or seeds them from herdr — on first launch, and
+    /// after a file that could not be read has been dealt with. Every failure
+    /// along the way becomes a notice; the app still starts with a `default`
+    /// tab so there is always something to attach to.
+    ///
+    /// **The original file is never written over while it is still there.**
+    /// Corrupt contents are moved aside first; a newer format or an I/O error
+    /// turns saving off for this run instead, because those bytes may be
+    /// somebody's perfectly good tab list. See `TabStore.LoadFailure`.
+    private func loadOrSeed(_ store: TabStore, using herdr: HerdrCLI) async -> [Notice] {
+        var notices: [Notice] = []
         do {
-            if try await store.load() { return }
+            if try await store.load() { return [] }
         } catch {
-            AlertPresenter.present(error, in: window)
+            notices.append(await recover(from: error, in: store))
         }
 
         var tabs: [SessionTab] = []
         do {
             tabs = TabStore.seedTabs(from: try await herdr.listSessions())
         } catch {
-            AlertPresenter.present(error, in: window)
+            notices.append(Notice(
+                title: "Could not list herdr sessions",
+                message: "\(error.localizedDescription)\n\nStarting with a “default” tab."
+            ))
         }
         if tabs.isEmpty, let fallback = try? SessionName("default") {
             tabs = [SessionTab(sessionName: fallback, color: .blue)]
@@ -95,7 +122,64 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         do {
             try store.replaceAll(tabs)
         } catch {
-            AlertPresenter.present(error, in: window)
+            notices.append(Notice(title: "Could not set up tabs", message: error.localizedDescription))
         }
+        return notices
+    }
+
+    /// Chooses the recovery for a file that could not be loaded and reports
+    /// what was done. Only `.invalidContents` may touch the file, and even
+    /// then only to move it; if that fails the run goes ephemeral too.
+    private func recover(from failure: TabStore.LoadFailure, in store: TabStore) async -> Notice {
+        let path = store.fileURL.path
+        switch failure {
+        case let .invalidContents(reason):
+            do {
+                let backup = try await store.quarantineFile()
+                return Notice(
+                    title: "Paddock rebuilt your tabs",
+                    message: """
+                    The saved tab layout could not be read: \(reason.localizedDescription)
+                    It was moved to:
+                    \(backup.path)
+
+                    Paddock rebuilt the tab list from your herdr sessions. Your herdr sessions were not \
+                    changed. Custom tab order, names and colours were reset.
+                    """
+                )
+            } catch {
+                store.disableSaving()
+                return Self.cannotAccessNotice(path: path, error: error)
+            }
+        case let .newerVersion(version):
+            store.disableSaving()
+            return Notice(
+                title: "These tabs were saved by a newer Paddock",
+                message: """
+                \(path) uses format version \(version) and was left unchanged.
+
+                Paddock is using a temporary tab list from herdr for this run; changes to tab order, \
+                names and colours will not be saved. Install a compatible Paddock to recover the saved \
+                layout, or delete this file if you intend to reset it. Your herdr sessions are unaffected.
+                """
+            )
+        case let .io(error):
+            store.disableSaving()
+            return Self.cannotAccessNotice(path: path, error: error)
+        }
+    }
+
+    private static func cannotAccessNotice(path: String, error: Error) -> Notice {
+        Notice(
+            title: "Paddock can’t access its saved tabs",
+            message: """
+            Paddock could not read or preserve \(path): \(error.localizedDescription)
+            The file was left unchanged.
+
+            Paddock is using a temporary tab list from herdr for this run; tab-layout changes will not \
+            be saved. Check the file and folder permissions, then relaunch. Your herdr sessions are \
+            unaffected.
+            """
+        )
     }
 }

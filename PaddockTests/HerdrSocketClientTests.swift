@@ -9,32 +9,39 @@ import Testing
 struct HerdrSocketClientTests {
     // MARK: - Stream lines
 
-    @Test func decodesAnEventLine() throws {
+    @Test func decodesAnEventLineToItsKind() throws {
         let line = Data(#"{"event":"workspace_focused","data":{"type":"workspace_focused","workspace_id":"w3"}}"#.utf8)
-        #expect(HerdrSocketClient.decodeEvent(line) == .workspaceFocused(id: "w3"))
+        #expect(HerdrSocketClient.decodeEventKind(line) == HerdrEventKind(wire: "workspace_focused"))
     }
 
-    @Test func keepsUnknownKindsAsOtherRatherThanSkippingThem() throws {
+    @Test func keepsUnknownKindsRatherThanSkippingThem() throws {
         let line = Data(#"{"event":"tab_created","data":{"type":"tab_created","tab":{}}}"#.utf8)
-        #expect(HerdrSocketClient.decodeEvent(line) == .other(kind: "tab_created"))
+        #expect(HerdrSocketClient.decodeEventKind(line) == HerdrEventKind(wire: "tab_created"))
+    }
+
+    /// A known kind with a payload the full-event decoder would reject still
+    /// yields its kind: the payload is not read, so it cannot fail.
+    @Test func keepsKnownKindsWhosePayloadHasDrifted() throws {
+        let line = Data(#"{"event":"workspace_created","data":{"type":"workspace_created"}}"#.utf8)
+        #expect(HerdrSocketClient.decodeEventKind(line) == HerdrEventKind(wire: "workspace_created"))
     }
 
     /// A truncated or otherwise unparseable line must not end a subscription;
-    /// the reader skips whatever `decodeEvent` cannot make sense of.
+    /// the reader skips whatever `decodeEventKind` cannot make sense of.
     @Test(arguments: [
         #"{"event":"workspace_focused","data""#,
         "not json at all",
         "",
     ])
     func skipsMalformedLines(line: String) {
-        #expect(HerdrSocketClient.decodeEvent(Data(line.utf8)) == nil)
+        #expect(HerdrSocketClient.decodeEventKind(Data(line.utf8)) == nil)
     }
 
     /// A reply is not an event: only the subscribe ack is expected on that
     /// connection, and it is consumed before the stream starts.
     @Test func skipsResponseLines() {
         let line = Data(#"{"id":"1","result":{"type":"subscription_started"}}"#.utf8)
-        #expect(HerdrSocketClient.decodeEvent(line) == nil)
+        #expect(HerdrSocketClient.decodeEventKind(line) == nil)
     }
 
     // MARK: - Connecting

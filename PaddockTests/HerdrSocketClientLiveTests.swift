@@ -51,7 +51,7 @@ struct HerdrSocketClientLiveTests {
         let stream = try await client.events(HerdrSubscription.workspaceKinds)
 
         let consumer = Task {
-            var events: [HerdrEvent] = []
+            var events: [HerdrEventKind] = []
             for try await event in stream { events.append(event) }
             return events
         }

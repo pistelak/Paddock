@@ -2,22 +2,28 @@ import AppKit
 
 /// All user-facing dialogs go through here so they look alike and so the
 /// sheet-vs-modal decision is made in one place.
+///
+/// Everything is `async` and returns when the dialog has been dismissed, so a
+/// caller can sequence "tell the user, *then* act" — the shape that stopped a
+/// tab-file recovery from writing over the file before its alert was even on
+/// screen. A caller that genuinely does not care when the dialog closes wraps
+/// the call in its own `Task`.
 @MainActor
 enum AlertPresenter {
-    static func present(_ error: Error, in window: NSWindow?) {
+    static func present(_ error: Error, in window: NSWindow?) async {
         let alert = NSAlert()
         alert.alertStyle = .warning
         alert.messageText = "Something went wrong"
         alert.informativeText = error.localizedDescription
-        Task { _ = await run(alert, in: window) }
+        _ = await run(alert, in: window)
     }
 
-    static func presentWarning(title: String, message: String, in window: NSWindow?) {
+    static func presentWarning(title: String, message: String, in window: NSWindow?) async {
         let alert = NSAlert()
         alert.alertStyle = .warning
         alert.messageText = title
         alert.informativeText = message
-        Task { _ = await run(alert, in: window) }
+        _ = await run(alert, in: window)
     }
 
     static func confirm(
@@ -61,6 +67,12 @@ enum AlertPresenter {
         return field.stringValue
     }
 
+    /// A sheet on `window`, or — with no window to attach to, which only
+    /// happens before the main window exists — an application-modal alert.
+    /// `runModal()` spins its own event loop on the main thread and returns
+    /// synchronously; inside an `async` main-actor function that is
+    /// re-entrant but sound, and it is the only way to show anything without
+    /// a window. `bootstrap()` shows the window first so this path is rare.
     private static func run(_ alert: NSAlert, in window: NSWindow?) async -> NSApplication.ModalResponse {
         guard let window else { return alert.runModal() }
         return await withCheckedContinuation { continuation in

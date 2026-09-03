@@ -46,6 +46,14 @@ enum HerdrSubscription: Encodable, Hashable, Sendable {
         }
     }
 
+    /// The kind of the events this subscription produces. herdr streams a
+    /// global event under its underscored name and a parameterised one under
+    /// the dotted subscription name; `HerdrEventKind` normalises both, so the
+    /// subscription's own `type` is enough to name what comes back.
+    var eventKind: HerdrEventKind {
+        HerdrEventKind(wire: type)
+    }
+
     /// Every workspace kind, in schema order: the set the column subscribes to
     /// to keep its rows current.
     static let workspaceKinds: [HerdrSubscription] = [

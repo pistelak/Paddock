@@ -127,8 +127,8 @@ extension WorkspaceStore {
         setConnection(connected)
 
         isConsumed = true
-        for try await event in opened.stream {
-            handle(event)
+        for try await kind in opened.stream {
+            handle(kind)
         }
         return .streamEnded
     }
@@ -136,7 +136,7 @@ extension WorkspaceStore {
     /// A subscribed events connection: the stream, and the list herdr actually
     /// accepted — which is not always the list that was asked for.
     struct OpenedEvents: Sendable {
-        let stream: AsyncThrowingStream<HerdrEvent, Error>
+        let stream: AsyncThrowingStream<HerdrEventKind, Error>
         let subscriptions: [HerdrSubscription]
 
         /// Ends a stream nobody is going to iterate. Termination — which is

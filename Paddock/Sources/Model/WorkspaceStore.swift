@@ -236,10 +236,10 @@ final class WorkspaceStore {
 
     /// Handles one stream event: at most a request for a fresh snapshot.
     ///
-    /// The event's payload is never read — see `WorkspaceEventPolicy` for why
-    /// a replayed backlog makes that the only safe rule.
-    func handle(_ event: HerdrEvent) {
-        guard WorkspaceEventPolicy.effect(of: event) == .resync else { return }
+    /// Only the event's kind ever arrives here — see `WorkspaceEventPolicy`
+    /// for why a replayed backlog makes ignoring the payload the only safe rule.
+    func handle(_ kind: HerdrEventKind) {
+        guard WorkspaceEventPolicy.effect(of: kind) == .resync else { return }
         scheduleResync()
     }
 

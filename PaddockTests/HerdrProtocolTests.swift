@@ -155,6 +155,7 @@ struct HerdrProtocolTests {
         #expect(workspace.tokens == nil)
         #expect(workspace.worktree == nil)
         #expect(workspace.id == workspace.workspaceID)
+        #expect(workspace.agentStatus == .idle, "idle is idle; herdr uses done for a finished run")
     }
 
     /// A worktree Paddock does not understand must not take the workspace with
@@ -356,11 +357,88 @@ struct HerdrProtocolTests {
         let streamed = try HerdrEventLine(line: Self.line(
             #"{"event":"workspace_focused","data":{"type":"workspace_focused","workspace_id":"w3"}}"#
         ))
-        guard case let .event(event) = streamed else {
+        guard case let .event(kind) = streamed else {
             Issue.record("expected .event")
             return
         }
-        #expect(event == .workspaceFocused(id: "w3"))
+        #expect(kind == HerdrEventKind(wire: "workspace_focused"))
+    }
+
+    // MARK: - Event kinds (the hot path)
+
+    /// The store only ever sees a kind, and both envelope dialects have to
+    /// produce the same one.
+    @Test func eventKindNormalisesTheDottedSubscriptionSpelling() throws {
+        let global = try HerdrEventLine(line: Self.line(
+            #"{"data":{"agent_status":"working","pane_id":"w4:p1","type":"pane_agent_status_changed","workspace_id":"w4"},"event":"pane_agent_status_changed"}"#
+        ))
+        let subscription = try HerdrEventLine(line: Self.line(
+            #"{"data":{"agent":"spikebot","agent_status":"blocked","pane_id":"w4:p1","workspace_id":"w4"},"event":"pane.agent_status_changed"}"#
+        ))
+        guard case let .event(a) = global, case let .event(b) = subscription else {
+            Issue.record("expected two events")
+            return
+        }
+        #expect(a == b)
+        #expect(a == HerdrSubscription.paneAgentStatusChanged(paneID: "w4:p1").eventKind)
+    }
+
+    /// The reason the hot path decodes kinds and not payloads: a known kind
+    /// whose payload herdr has reshaped must still reach the store, or the
+    /// column would silently stop updating while the footer said "live".
+    @Test(arguments: [
+        #"{"event":"workspace_renamed","data":{"type":"workspace_renamed","workspace_id":"w4"}}"#,
+        #"{"event":"workspace_created","data":{"type":"workspace_created","space":{"workspace_id":"w4"}}}"#,
+        #"{"event":"workspace_created","data":{"type":"workspace_created","workspace":{"workspace_id":"w4","number":2}}}"#,
+        #"{"event":"pane.agent_status_changed","data":{"pane_id":"w4:p1"}}"#,
+        #"{"event":"workspace_focused","data":"gone"}"#,
+        #"{"event":"workspace_focused"}"#,
+    ])
+    func aKnownKindWithAnUnreadablePayloadIsStillThatKind(json: String) throws {
+        let line = try HerdrEventLine(line: Self.line(json))
+        guard case let .event(kind) = line else {
+            Issue.record("expected .event")
+            return
+        }
+        #expect(WorkspaceEventPolicy.effect(of: kind) == .resync)
+        // Meanwhile the full-payload record of the same line either throws or
+        // demotes the event to `.other`: exactly the loss the kind-only hot
+        // path exists to avoid, and the drift the protocol tests are for.
+        let fullyDecoded = try? Self.event(json)
+        switch fullyDecoded {
+        case nil, .other?: break
+        case let decoded?: Issue.record("full decoder accepted drifted payload as \(decoded)")
+        }
+    }
+
+    /// Fields nothing draws are optional, so a herdr that renames one costs a
+    /// `nil` and not every snapshot.
+    @Test func workspaceInfoDecodesWithoutTheFieldsNothingReads() throws {
+        let workspace = try Self.decode(WorkspaceInfo.self, #"""
+        {"workspace_id":"w3","number":1,"label":"~","focused":true,"agent_status":"idle"}
+        """#)
+        #expect(workspace.paneCount == nil)
+        #expect(workspace.tabCount == nil)
+        #expect(workspace.activeTabID == nil)
+        #expect(workspace.agentStatus == .idle)
+    }
+
+    @Test func paneInfoDecodesWithoutTheFieldsNothingReads() throws {
+        let pane = try Self.decode(PaneInfo.self, #"""
+        {"pane_id":"w3:p1","workspace_id":"w3","agent_status":"working"}
+        """#)
+        #expect(pane.tabID == nil)
+        #expect(pane.focused == nil)
+        #expect(pane.agentStatus == .working)
+    }
+
+    @Test func sessionSnapshotDecodesWithoutVersionFields() throws {
+        let snapshot = try Self.decode(SessionSnapshotResult.self, #"""
+        {"snapshot":{"workspaces":[],"panes":[]}}
+        """#).snapshot
+        #expect(snapshot.version == nil)
+        #expect(snapshot.protocolVersion == nil)
+        #expect(snapshot.workspaces.isEmpty)
     }
 
     // MARK: - Helpers

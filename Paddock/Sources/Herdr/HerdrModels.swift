@@ -1,11 +1,23 @@
 import Foundation
 
+// Wire types for herdr's JSON API.
+//
+// **A field is required here only if a screen would be wrong without it.**
+// Everything else is optional, even where herdr's schema marks it required:
+// a future herdr that renames or drops a field nothing reads must cost a
+// `nil`, not every snapshot for the life of the tab. `WorkspaceWorktreeInfo`
+// was the first type to follow the rule; `WorkspaceInfo` and `SessionSnapshot`
+// lost three required-but-unread fields each when it was made general.
+
 /// The status herdr reports for an agent, a pane, a tab or a workspace.
 ///
 /// Unlisted strings decode as `.unknown` instead of failing: a new status in a
-/// future herdr must not take the whole snapshot down with it. Note that an
-/// agent reporting `idle` surfaces here as `done`; `idle` is what herdr uses
-/// for "no agent has said anything".
+/// future herdr must not take the whole snapshot down with it.
+///
+/// `idle` and `done` are distinct and both pass through unchanged: herdr uses
+/// `done` for a run that finished and has not been marked seen, and `idle` for
+/// a pane whose agent has settled without such a transition (herdr 0.8.0
+/// changelog). A no-agent pane reports `unknown`.
 enum AgentStatus: String, Codable, Sendable, CaseIterable {
     case idle
     case working
@@ -44,6 +56,10 @@ struct WorkspaceWorktreeInfo: Codable, Hashable, Sendable {
 ///
 /// The same shape arrives from `workspace.list`, `session.snapshot` and the
 /// `workspace_*` events, so it is decoded once here and used everywhere.
+///
+/// `workspaceID`, `number`, `label`, `focused` and `agentStatus` are what a
+/// row draws, so they are required. `paneCount`, `tabCount` and `activeTabID`
+/// are kept for completeness but nothing reads them, so they are optional.
 struct WorkspaceInfo: Codable, Hashable, Sendable, Identifiable {
     var id: String { workspaceID }
 
@@ -51,9 +67,9 @@ struct WorkspaceInfo: Codable, Hashable, Sendable, Identifiable {
     let number: Int
     let label: String
     let focused: Bool
-    let paneCount: Int
-    let tabCount: Int
-    let activeTabID: String
+    let paneCount: Int?
+    let tabCount: Int?
+    let activeTabID: String?
     let agentStatus: AgentStatus
     let tokens: [String: String]?
     let worktree: WorkspaceWorktreeInfo?
@@ -76,9 +92,9 @@ struct WorkspaceInfo: Codable, Hashable, Sendable, Identifiable {
         number: Int,
         label: String,
         focused: Bool,
-        paneCount: Int,
-        tabCount: Int,
-        activeTabID: String,
+        paneCount: Int? = nil,
+        tabCount: Int? = nil,
+        activeTabID: String? = nil,
         agentStatus: AgentStatus,
         tokens: [String: String]? = nil,
         worktree: WorkspaceWorktreeInfo? = nil
@@ -100,17 +116,21 @@ struct WorkspaceInfo: Codable, Hashable, Sendable, Identifiable {
 /// which agent runs in it and how that agent is doing. Panes matter in phase 1
 /// only because `pane.agent_status_changed` has to be subscribed per pane;
 /// the geometry, scroll and terminal fields herdr also sends are ignored.
+///
+/// `paneID`, `workspaceID` and `agentStatus` are required: the first two drive
+/// the subscription list, the last is the only live status source. The rest
+/// is optional because nothing reads it yet.
 struct PaneInfo: Codable, Hashable, Sendable, Identifiable {
     var id: String { paneID }
 
     let paneID: String
     let workspaceID: String
-    let tabID: String
+    let tabID: String?
     let agent: String?
     let agentStatus: AgentStatus
     let terminalTitleStripped: String?
     let title: String?
-    let focused: Bool
+    let focused: Bool?
 
     enum CodingKeys: String, CodingKey {
         case paneID = "pane_id"
@@ -126,12 +146,12 @@ struct PaneInfo: Codable, Hashable, Sendable, Identifiable {
     init(
         paneID: String,
         workspaceID: String,
-        tabID: String,
+        tabID: String? = nil,
         agent: String? = nil,
         agentStatus: AgentStatus,
         terminalTitleStripped: String? = nil,
         title: String? = nil,
-        focused: Bool
+        focused: Bool? = nil
     ) {
         self.paneID = paneID
         self.workspaceID = workspaceID
@@ -174,9 +194,11 @@ struct PingResult: Decodable, Sendable {
 ///
 /// herdr also sends `tabs`, `layouts`, `agents`, `focused_tab_id` and
 /// `focused_pane_id`; the column does not use them, so they are not modelled.
+/// `version` and `protocolVersion` are informational only (`ping` is where the
+/// protocol check happens), so they are optional too.
 struct SessionSnapshot: Decodable, Hashable, Sendable {
-    let version: String
-    let protocolVersion: Int
+    let version: String?
+    let protocolVersion: Int?
     let workspaces: [WorkspaceInfo]
     let panes: [PaneInfo]
     let focusedWorkspaceID: String?

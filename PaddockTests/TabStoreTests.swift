@@ -152,29 +152,185 @@ final class TabStoreTests {
         )
     }
 
-    @Test func rejectsNewerFileFormatBeforeDecodingTabs() async throws {
-        try write("{\"version\": 3, \"tabs\": [{\"unknown\": true}]}")
-        let store = makeStore()
-        await #expect(throws: PaddockError.unsupportedTabsFile(version: 3)) {
+    // MARK: - Load failures
+
+    private static let duplicateSessionsJSON = """
+    {"version": 2, "tabs": [
+      {"id": "60E1F8ED-364B-442A-AB67-90DB70F6B822", "sessionName": "work", "displayName": "a", "color": "blue"},
+      {"id": "0382F4A0-7A89-48C7-8EDE-726D90ABE978", "sessionName": "work", "displayName": "b", "color": "red"}
+    ]}
+    """
+
+    private func loadFailure(of store: TabStore) async throws -> TabStore.LoadFailure {
+        try #require(await #expect(throws: TabStore.LoadFailure.self) {
             _ = try await store.load()
+        })
+    }
+
+    @Test func aNewerFileFormatIsReportedAsSuchBeforeDecodingTabs() async throws {
+        try write("{\"version\": 3, \"tabs\": [{\"unknown\": true}]}")
+        guard case let .newerVersion(version) = try await loadFailure(of: makeStore()) else {
+            Issue.record("expected .newerVersion")
+            return
+        }
+        #expect(version == 3)
+    }
+
+    /// A version Paddock has never written is not "newer": it is not a tab
+    /// list this app can vouch for, and moving it aside is the right call.
+    @Test func anUnknownOlderVersionIsInvalidContents() async throws {
+        try write("{\"version\": 0, \"tabs\": []}")
+        guard case .invalidContents = try await loadFailure(of: makeStore()) else {
+            Issue.record("expected .invalidContents")
+            return
         }
     }
 
-    @Test func rejectsDuplicateSessionsInFile() async throws {
+    @Test func duplicateSessionsInTheFileAreInvalidContents() async throws {
+        try write(Self.duplicateSessionsJSON)
+        guard case let .invalidContents(reason) = try await loadFailure(of: makeStore()) else {
+            Issue.record("expected .invalidContents")
+            return
+        }
+        guard case .corruptTabsFile = reason as? PaddockError else {
+            Issue.record("unexpected \(reason)")
+            return
+        }
+    }
+
+    @Test(arguments: [
+        "{\"version\": 2, \"tabs\": [{\"id\": \"60E1F8ED-364B-442A-AB67-90DB70F6B822\"",
+        "not json",
+        "{\"version\": 2, \"tabs\": [{\"id\": \"60E1F8ED-364B-442A-AB67-90DB70F6B822\", \"sessionName\": \"bad name!\", \"displayName\": \"a\", \"color\": \"blue\"}]}",
+    ])
+    func unreadableJSONIsInvalidContents(json: String) async throws {
+        try write(json)
+        guard case .invalidContents = try await loadFailure(of: makeStore()) else {
+            Issue.record("expected .invalidContents")
+            return
+        }
+    }
+
+    /// Something is at the path but it cannot be read as a file. These are
+    /// deterministic (no reliance on permissions, which a privileged runner
+    /// ignores) and each must be `.io`, never "missing": a missing file is
+    /// what lets the caller write a fresh one.
+    @Test func aSymlinkLoopAtThePathIsAnIOFailure() async throws {
+        try FileManager.default.createDirectory(at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(atPath: fileURL.path, withDestinationPath: fileURL.lastPathComponent)
+        guard case .io = try await loadFailure(of: makeStore()) else {
+            Issue.record("expected .io")
+            return
+        }
+    }
+
+    @Test func aDanglingSymlinkAtThePathIsAnIOFailure() async throws {
+        try FileManager.default.createDirectory(at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(atPath: fileURL.path, withDestinationPath: "does-not-exist.json")
+        guard case .io = try await loadFailure(of: makeStore()) else {
+            Issue.record("expected .io")
+            return
+        }
+    }
+
+    @Test func aDirectoryAtThePathIsAnIOFailure() async throws {
+        try FileManager.default.createDirectory(at: fileURL, withIntermediateDirectories: true)
+        guard case .io = try await loadFailure(of: makeStore()) else {
+            Issue.record("expected .io")
+            return
+        }
+    }
+
+    /// A symlink to a real file is fine — a user who keeps tabs.json in a
+    /// dotfiles repo must not be told their file is unreadable.
+    @Test func aSymlinkToARealFileLoads() async throws {
+        let target = fileURL.deletingLastPathComponent().appendingPathComponent("real-tabs.json")
+        try FileManager.default.createDirectory(at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("{\"version\": 2, \"tabs\": []}".utf8).write(to: target)
+        try FileManager.default.createSymbolicLink(atPath: fileURL.path, withDestinationPath: target.lastPathComponent)
+        #expect(try await makeStore().load())
+    }
+
+    // MARK: - Recovery
+
+    /// The data-loss bug this guards: a file that failed to load must not be
+    /// written over by the seeded replacement. Quarantine moves it aside with
+    /// its bytes intact, and only then does a save go to the original path.
+    @Test func quarantineMovesTheFileAsideWithItsBytesIntact() async throws {
+        try write(Self.duplicateSessionsJSON)
+        let original = try Data(contentsOf: fileURL)
+        let store = makeStore()
+        _ = try await loadFailure(of: store)
+
+        let backup = try await store.quarantineFile()
+        #expect(!FileManager.default.fileExists(atPath: fileURL.path), "the original path is free")
+        #expect(backup.deletingLastPathComponent() == fileURL.deletingLastPathComponent(), "a sibling")
+        #expect(backup.lastPathComponent.hasPrefix("tabs.json.unreadable-"))
+        #expect(try Data(contentsOf: backup) == original)
+
+        try store.replaceAll([SessionTab(sessionName: name("work"), color: .blue)])
+        await store.flush()
+        #expect(FileManager.default.fileExists(atPath: fileURL.path), "the fresh list was saved")
+        #expect(try Data(contentsOf: backup) == original, "and the backup was not touched")
+    }
+
+    @Test func quarantineNeverOverwritesAnEarlierBackup() async throws {
+        try write("first")
+        let store = makeStore()
+        let first = try await store.quarantineFile()
+        try write("second")
+        let second = try await store.quarantineFile()
+        #expect(first != second)
+        #expect(try String(decoding: Data(contentsOf: first), as: UTF8.self) == "first")
+        #expect(try String(decoding: Data(contentsOf: second), as: UTF8.self) == "second")
+    }
+
+    /// The other half of the recovery: a file left in place (newer format, I/O
+    /// error) must see zero writes for the rest of the run — not from seeding,
+    /// not from an edit, not from the flush at quit.
+    @Test func disablingSavingStopsEveryWrite() async throws {
+        let newer = "{\"version\": 3, \"tabs\": []}"
+        try write(newer)
+        let store = makeStore()
+        _ = try await loadFailure(of: store)
+        store.disableSaving()
+        #expect(store.persistence == .disabled)
+
+        try store.replaceAll([SessionTab(sessionName: name("work"), color: .blue)])
+        let work = try store.addTab(sessionName: name("personal"))
+        store.renameTab(id: work.id, to: "Personal")
+        store.removeTab(id: work.id)
+        await store.flush()
+
+        #expect(try String(decoding: Data(contentsOf: fileURL), as: UTF8.self) == newer, "original bytes untouched")
+        #expect(store.tabs.count == 1, "the in-memory list still works")
+    }
+
+    // MARK: - Stored format
+
+    /// The V2 file is decoded through a frozen stored type and `SessionTab`'s
+    /// initialiser, so a blank name normalises exactly like a V1 one does.
+    @Test(arguments: ["\"\"", "\"   \"", "null"])
+    func version2BlankDisplayNamesNormaliseToTheSessionName(displayName: String) async throws {
         try write("""
         {"version": 2, "tabs": [
-          {"id": "60E1F8ED-364B-442A-AB67-90DB70F6B822", "sessionName": "work", "displayName": "a", "color": "blue"},
-          {"id": "0382F4A0-7A89-48C7-8EDE-726D90ABE978", "sessionName": "work", "displayName": "b", "color": "red"}
+          {"id": "60E1F8ED-364B-442A-AB67-90DB70F6B822", "sessionName": "work", "displayName": \(displayName), "color": "teal"}
         ]}
         """)
         let store = makeStore()
-        let error = await #expect(throws: PaddockError.self) {
-            _ = try await store.load()
-        }
-        guard case .corruptTabsFile = try #require(error) else {
-            Issue.record("unexpected \(String(describing: error))")
-            return
-        }
+        #expect(try await store.load())
+        #expect(store.tabs.first?.displayName == "work")
+        #expect(store.tabs.first?.color == .teal)
+    }
+
+    @Test func version2RoundTripsThroughTheStoredType() throws {
+        let tabs = [
+            SessionTab(sessionName: try name("work"), displayName: "Work", color: .teal),
+            SessionTab(sessionName: try name("home"), color: .red),
+        ]
+        let decoded = try TabsDocument.decode(TabsDocument.encode(tabs))
+        #expect(decoded.tabs == tabs)
+        #expect(!decoded.needsUpgrade)
     }
 
     @Test func initials() throws {

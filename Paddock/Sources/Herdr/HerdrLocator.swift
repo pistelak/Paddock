@@ -9,6 +9,12 @@ enum HerdrLocator {
         "/usr/local/bin/herdr",
     ]
 
+    /// How long the login shell gets. A `.zshrc` that blocks (a version
+    /// manager phoning home, an `nvm` init, a prompt waiting on input) must
+    /// not hold the launch: past this the answer is "not found" and the user
+    /// gets the install hint instead of a window that never opens.
+    static let loginShellTimeout: Duration = .seconds(3)
+
     static func locate(
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) async -> URL? {
@@ -23,7 +29,8 @@ enum HerdrLocator {
         guard let result = try? await ProcessRunner.run(
             URL(fileURLWithPath: shell),
             arguments: ["-lc", "command -v herdr"],
-            environment: environment
+            environment: environment,
+            timeout: loginShellTimeout
         ), result.status == 0 else {
             return nil
         }

@@ -1,7 +1,49 @@
 import Foundation
 
+/// The kind of one stream event and nothing else — what the store actually
+/// consumes.
+///
+/// Nothing downstream reads an event's payload (see `WorkspaceEventPolicy`
+/// for why herdr's replayed backlog makes that the only safe rule), so nothing
+/// on the hot path decodes one either. Decoding only the top-level `event`
+/// string means a herdr that reshapes an event's *payload* — renames a field,
+/// drops one, nests it differently — still produces the invalidation the
+/// column depends on. The full-payload `HerdrEvent` below stays as the record
+/// of herdr's shapes and is exercised by the protocol tests, but production
+/// never decodes it.
+///
+/// Two envelope dialects arrive on the same connection: global events use an
+/// underscored kind (`workspace_created`), parameterised subscriptions use the
+/// dotted subscription name (`pane.agent_status_changed`). The kind is
+/// normalised to underscores so both compare equal to the subscription that
+/// produced them.
+struct HerdrEventKind: Hashable, Sendable, Decodable, CustomStringConvertible {
+    /// The kind with dots normalised to underscores.
+    let rawValue: String
+
+    init(wire kind: String) {
+        rawValue = kind.replacingOccurrences(of: ".", with: "_")
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(wire: try container.decode(String.self, forKey: .event))
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case event
+    }
+
+    var description: String { rawValue }
+}
+
 /// A stream event, decoded from herdr's `{"event": kind, "data": {…}}`
 /// envelope down to the parts the spaces column reacts to.
+///
+/// **Not used on the hot path.** `HerdrSocketClient` streams `HerdrEventKind`;
+/// this type documents herdr's payload shapes and is what the protocol tests
+/// decode captured lines into, so drift shows up in tests without ever being
+/// able to drop an invalidation in production.
 ///
 /// Two envelope dialects arrive on the same connection. Global events name the
 /// kind twice — `{"event":"workspace_created","data":{"type":"workspace_created",
@@ -120,18 +162,21 @@ enum HerdrEvent: Decodable, Hashable, Sendable {
 /// The subscribe acknowledgement is not an event but the ordinary reply to the
 /// `events.subscribe` request — `{"id":"sub","result":{"type":"subscription_started"}}`
 /// — and a rejected subscription comes back as an ordinary error response on
-/// the same connection. Modelling the ack as a `HerdrEvent` case would hide
-/// that; keeping the two apart lets the client await the reply, throw on its
-/// error, and then treat every following line as an event.
+/// the same connection. Modelling the ack as an event kind would hide that;
+/// keeping the two apart lets the client await the reply, throw on its error,
+/// and then treat every following line as an event.
+///
+/// An event line yields only its kind: the payload is never looked at, so a
+/// payload herdr has reshaped cannot make a known kind fail to decode.
 enum HerdrEventLine: Sendable {
     case response(HerdrResponse)
-    case event(HerdrEvent)
+    case event(HerdrEventKind)
 
     init(line: Data) throws {
-        if try JSONDecoder().decode(Probe.self, from: line).event == nil {
-            self = .response(try HerdrResponse(line: line))
+        if let kind = try JSONDecoder().decode(Probe.self, from: line).event {
+            self = .event(HerdrEventKind(wire: kind))
         } else {
-            self = .event(try JSONDecoder().decode(HerdrEvent.self, from: line))
+            self = .response(try HerdrResponse(line: line))
         }
     }
 

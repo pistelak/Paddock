@@ -3,6 +3,7 @@ import Foundation
 enum PaddockError: Error, LocalizedError, Equatable {
     case herdrNotFound
     case herdrCommandFailed(arguments: [String], status: Int32, stderr: String)
+    case commandTimedOut(arguments: [String], after: Duration)
     case invalidSessionName(String)
     case duplicateSession(String)
     case unsupportedTabsFile(version: Int)
@@ -19,6 +20,8 @@ enum PaddockError: Error, LocalizedError, Equatable {
             "herdr was not found. Install it with `brew install herdr` or put it on your login shell's PATH."
         case let .herdrCommandFailed(arguments, status, stderr):
             "`herdr \(arguments.joined(separator: " "))` exited with status \(status).\n\(stderr)"
+        case let .commandTimedOut(arguments, after):
+            "`\(arguments.joined(separator: " "))` did not finish within \(after) and was terminated."
         case let .invalidSessionName(name):
             "“\(name)” is not a valid session name. Use up to \(SessionName.maximumLength) ASCII letters, digits, dots, dashes or underscores."
         case let .duplicateSession(name):

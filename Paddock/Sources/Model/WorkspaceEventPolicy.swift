@@ -19,11 +19,12 @@ import Foundation
 /// that no longer existed until the store resubscribed itself into an ~11k
 /// stream loop.
 ///
-/// So nothing here reads a payload. Every event Paddock subscribed to answers
-/// one question — *might the world have moved?* — and `session.snapshot`, which
-/// can only ever describe the present, answers *how*. A replayed event costs at
-/// most one redundant snapshot; `WorkspaceListState` is `Equatable`, so a
-/// snapshot that says nothing new is not even a render.
+/// So nothing here reads a payload — and since `HerdrEventKind` never decodes
+/// one, nothing *can*. Every event Paddock subscribed to answers one question
+/// — *might the world have moved?* — and `session.snapshot`, which can only
+/// ever describe the present, answers *how*. A replayed event costs at most
+/// one redundant snapshot; `WorkspaceListState` is `Equatable`, so a snapshot
+/// that says nothing new is not even a render.
 enum WorkspaceEventPolicy {
     /// What the store does about an event.
     enum Effect: Equatable, Sendable {
@@ -33,22 +34,23 @@ enum WorkspaceEventPolicy {
         case resync
     }
 
-    /// Every kind Paddock subscribes to invalidates the rows; nothing else can
-    /// arrive, because a subscription is the only way an event reaches the
-    /// stream at all.
-    static func effect(of event: HerdrEvent) -> Effect {
-        switch event {
-        case .workspaceCreated, .workspaceUpdated, .workspaceRenamed, .workspaceClosed,
-             .workspaceMoved, .workspaceReordered, .workspaceFocused,
-             .paneCreated, .paneClosed, .paneExited,
-             .paneAgentDetected, .paneAgentStatusChanged:
-            .resync
+    /// Every kind Paddock subscribes to, derived from the subscription list
+    /// itself so the two can never drift apart: the workspace kinds, the
+    /// global pane kinds, and the per-pane status kind (whose `pane_id`
+    /// parameter does not take part in the event's name).
+    static let resyncKinds: Set<HerdrEventKind> = Set(
+        (HerdrSubscription.workspaceKinds
+            + HerdrSubscription.paneKinds
+            + [.paneAgentStatusChanged(paneID: "")])
+            .map(\.eventKind)
+    )
 
-        // A kind Paddock never subscribed to, or one a future herdr adds. It
-        // cannot be about the rows, and a snapshot per unknown line would let
-        // an unrelated chatty kind drive the request rate.
-        case .other:
-            .ignore
-        }
+    /// Every kind Paddock subscribes to invalidates the rows; nothing else can
+    /// arrive on purpose, because a subscription is the only way an event
+    /// reaches the stream at all — but herdr does stream kinds nobody asked
+    /// for, and a snapshot per unknown line would let an unrelated chatty kind
+    /// drive the request rate, so those are ignored.
+    static func effect(of kind: HerdrEventKind) -> Effect {
+        resyncKinds.contains(kind) ? .resync : .ignore
     }
 }

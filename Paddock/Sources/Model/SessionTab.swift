@@ -1,6 +1,12 @@
 import Foundation
 
-struct SessionTab: Codable, Hashable, Identifiable, Sendable {
+/// One side tab: a herdr session plus how the tile shows it.
+///
+/// Deliberately *not* `Codable`. The on-disk shape lives in `TabsDocument`'s
+/// frozen stored types, which build a `SessionTab` through this initialiser —
+/// a synthesised `Decodable` would assign `displayName` directly and skip the
+/// normalisation below, so a blank name in the file would become a blank tile.
+struct SessionTab: Hashable, Identifiable, Sendable {
     let id: UUID
     let sessionName: SessionName
     private(set) var displayName: String

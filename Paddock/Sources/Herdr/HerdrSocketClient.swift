@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 /// Talks to one herdr session over its Unix socket.
 ///
@@ -19,6 +20,8 @@ actor HerdrSocketClient {
     static let requestTimeout: Duration = .seconds(15)
 
     private static let subscribeMethod = "events.subscribe"
+
+    private static let log = Logger(subsystem: "com.radekpistelak.Paddock", category: "herdr-socket")
 
     /// The socket this client is bound to. `nonisolated` so a caller can name
     /// it in an error or a log line without awaiting the actor.
@@ -66,20 +69,26 @@ actor HerdrSocketClient {
     // MARK: - Events
 
     /// Subscribes to `subscriptions` on a long-lived connection and streams the
-    /// events that follow.
+    /// *kinds* of the events that follow.
+    ///
+    /// Only kinds, never payloads: the store treats every event as "something
+    /// may have moved" and refetches a snapshot (see `WorkspaceEventPolicy`),
+    /// so decoding a payload could only ever *fail* — and a herdr that reshaped
+    /// an event's payload would then silently freeze the column. Reading just
+    /// the top-level `event` string cannot be broken that way.
     ///
     /// Returns only once herdr has acknowledged the subscription, so a rejected
     /// subscription throws here rather than deep inside the caller's `for try
     /// await` loop. Right after the ack herdr replays a backlog of historical
     /// events (34 on an idle session in the spike, including workspaces long
-    /// since closed); they are passed through unchanged for the reducer to
+    /// since closed); they are passed through unchanged for the store to
     /// reconcile against a snapshot.
     ///
     /// The stream ends with `finish()` when herdr closes the connection, so a
     /// consumer sees a clean end of iteration rather than an error. Breaking
     /// out of the loop, cancelling the consuming task or dropping the stream
     /// all tear the connection down through `onTermination`.
-    func events(_ subscriptions: [HerdrSubscription]) async throws -> AsyncThrowingStream<HerdrEvent, Error> {
+    func events(_ subscriptions: [HerdrSubscription]) async throws -> AsyncThrowingStream<HerdrEventKind, Error> {
         let line = try HerdrRequest(
             id: nextRequestID(),
             method: Self.subscribeMethod,
@@ -87,7 +96,7 @@ actor HerdrSocketClient {
         ).encodedLine()
         let connection = try UnixSocketConnection(path: socketPath)
 
-        let (stream, events) = AsyncThrowingStream<HerdrEvent, Error>.makeStream()
+        let (stream, events) = AsyncThrowingStream<HerdrEventKind, Error>.makeStream()
         // A one-shot channel for the ack instead of a `CheckedContinuation`:
         // finishing it twice is harmless, so the timeout below can give up on
         // the handshake without risking a continuation-misuse crash.
@@ -97,16 +106,30 @@ actor HerdrSocketClient {
         // isolation and run the whole long-lived read loop on the actor,
         // where it would sit between every `request(_:)` call. The loop
         // touches nothing but the connection and the two continuations.
+        let socketPath = socketPath
         let reader = Task.detached {
             var isAcknowledged = false
+            var skippedLines = 0
             do {
                 try connection.writeLine(line)
                 for try await data in connection.lines {
                     guard !data.isEmpty else { continue }
                     if isAcknowledged {
-                        // A malformed line after the ack is skipped, never
-                        // fatal: the stream outlives whatever produced it.
-                        if let event = Self.decodeEvent(data) { events.yield(event) }
+                        // A line that is not an event after the ack — a stray
+                        // reply, or JSON herdr never finished — is skipped,
+                        // never fatal: the stream outlives whatever produced
+                        // it. It is counted and logged so that a herdr change
+                        // that makes *every* line unreadable is visible
+                        // somewhere, instead of surfacing as a column that
+                        // quietly stops updating.
+                        if let kind = Self.decodeEventKind(data) {
+                            events.yield(kind)
+                        } else {
+                            skippedLines += 1
+                            Self.log.debug(
+                                "skipped non-event line #\(skippedLines) on \(socketPath, privacy: .public): \(String(decoding: data.prefix(200), as: UTF8.self), privacy: .public)"
+                            )
+                        }
                         continue
                     }
                     switch try HerdrEventLine(line: data) {
@@ -121,10 +144,10 @@ actor HerdrSocketClient {
                         isAcknowledged = true
                         acked.yield(())
                         acked.finish()
-                    case let .event(event):
+                    case let .event(kind):
                         // Not observed, but harmless: an event that beats the
                         // ack is delivered and the handshake keeps waiting.
-                        events.yield(event)
+                        events.yield(kind)
                     }
                 }
                 acked.finish(
@@ -165,13 +188,13 @@ actor HerdrSocketClient {
 
     // MARK: - Line plumbing
 
-    /// Decodes one stream line, or `nil` for a line that is not an event —
+    /// The kind of one stream line, or `nil` for a line that is not an event —
     /// malformed JSON, or a stray reply. Skipping keeps one bad line from
-    /// ending a subscription; unknown *kinds* never get here, `HerdrEvent`
-    /// already folds those into `.other`.
-    static func decodeEvent(_ line: Data) -> HerdrEvent? {
-        guard case let .event(event) = try? HerdrEventLine(line: line) else { return nil }
-        return event
+    /// ending a subscription. A known kind whose *payload* herdr has reshaped
+    /// still decodes, because only the `event` field is read.
+    static func decodeEventKind(_ line: Data) -> HerdrEventKind? {
+        guard case let .event(kind) = try? HerdrEventLine(line: line) else { return nil }
+        return kind
     }
 
     /// Reads the first non-empty line, or throws if herdr closes first.
@@ -184,47 +207,19 @@ actor HerdrSocketClient {
         }
     }
 
-    /// Races `operation` against `requestTimeout`, running `interrupt` on
-    /// timeout or on cancellation of the calling task — a blocked socket read
-    /// ignores cancellation, so something has to shut the descriptor down for
-    /// it to finish.
+    /// `Timeout.race` with `requestTimeout` and herdr's error vocabulary: a
+    /// blocked socket read ignores cancellation, so `interrupt` shuts the
+    /// descriptor down for it to finish.
     private static func withTimeout<T: Sendable>(
         method: String,
         interrupt: @escaping @Sendable () -> Void,
         operation: @escaping @Sendable () async throws -> T
     ) async throws -> T {
-        try await withTaskCancellationHandler {
-            try await withThrowingTaskGroup(of: TimedOutcome<T>.self) { group in
-                group.addTask { .value(try await operation()) }
-                group.addTask {
-                    // `try?` around the sleep would swallow cancellation and
-                    // interrupt a perfectly healthy connection.
-                    do { try await Task.sleep(for: requestTimeout) } catch { return .cancelled }
-                    guard !Task.isCancelled else { return .cancelled }
-                    interrupt()
-                    return .timedOut
-                }
-                defer { group.cancelAll() }
-
-                while let outcome = try await group.next() {
-                    switch outcome {
-                    case let .value(value): return value
-                    case .timedOut: throw PaddockError.herdrTimeout(method: method)
-                    case .cancelled: continue
-                    }
-                }
-                throw CancellationError()
-            }
-        } onCancel: {
-            interrupt()
+        do {
+            return try await Timeout.race(requestTimeout, interrupt: interrupt, operation: operation)
+        } catch is Timeout.Expired {
+            throw PaddockError.herdrTimeout(method: method)
         }
-    }
-
-    /// Which arm of the `withTimeout` race finished first.
-    private enum TimedOutcome<Value: Sendable>: Sendable {
-        case value(Value)
-        case timedOut
-        case cancelled
     }
 
     /// herdr echoes the id back but never matches it against anything, and a
