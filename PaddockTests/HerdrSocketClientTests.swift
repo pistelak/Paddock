@@ -86,16 +86,87 @@ struct HerdrSocketClientTests {
         #expect(error.code == Int(EMFILE))
     }
 
+    // MARK: - One reader per connection
+
+    /// The invariant the lifecycle lock depends on, enforced rather than
+    /// documented: a second reader would race the first for bytes and, worse,
+    /// let the first to finish hand the descriptor back under the other.
+    @Test func aConnectionHandsOutItsLinesOnlyOnce() throws {
+        let path = "/tmp/paddock-listen-\(UInt32.random(in: 0 ... .max)).sock"
+        let listener = try listen(at: path)
+        defer {
+            Darwin.close(listener)
+            try? FileManager.default.removeItem(atPath: path)
+        }
+
+        let connection = try UnixSocketConnection(path: path)
+        let lines = try connection.makeLines()
+        #expect(throws: PaddockError.herdrSocketAlreadyReading(path: path)) {
+            _ = try connection.makeLines()
+        }
+        connection.close()
+        withExtendedLifetime(lines) {}
+    }
+
+    /// The contract is one reader *ever*, not one at a time: a connection
+    /// carries one exchange, so a second reader after EOF has nothing to read.
+    @Test func aConnectionRefusesASecondReaderEvenAfterTheFirstFinished() async throws {
+        let path = "/tmp/paddock-listen-\(UInt32.random(in: 0 ... .max)).sock"
+        let listener = try listen(at: path)
+        defer { try? FileManager.default.removeItem(atPath: path) }
+
+        let connection = try UnixSocketConnection(path: path)
+        let lines = try connection.makeLines()
+        // Closing the listener's side ends the first reader with EOF.
+        let accepted = accept(listener, nil, nil)
+        try #require(accepted >= 0)
+        Darwin.close(accepted)
+        Darwin.close(listener)
+        for try await _ in lines {}
+
+        #expect(throws: PaddockError.herdrSocketAlreadyReading(path: path)) {
+            _ = try connection.makeLines()
+        }
+        connection.close()
+    }
+
+    @Test func aClosedConnectionRefusesAReader() throws {
+        let path = "/tmp/paddock-listen-\(UInt32.random(in: 0 ... .max)).sock"
+        let listener = try listen(at: path)
+        defer {
+            Darwin.close(listener)
+            try? FileManager.default.removeItem(atPath: path)
+        }
+
+        let connection = try UnixSocketConnection(path: path)
+        connection.close()
+        #expect(throws: PaddockError.herdrSocketUnavailable(path: path)) {
+            _ = try connection.makeLines()
+        }
+    }
+
     // MARK: - Helpers
+
+    /// A listening `AF_UNIX` socket at `path`, so a `UnixSocketConnection` can
+    /// connect to something that never answers.
+    private func listen(at path: String) throws -> Int32 {
+        let descriptor = try bind(at: path)
+        try #require(Darwin.listen(descriptor, 1) == 0, "could not listen on \(path): errno \(errno)")
+        return descriptor
+    }
 
     /// Creates a bound-but-not-listening `AF_UNIX` socket file. Swift Testing
     /// has no mid-test skip, so the conditions that used to skip the test are
     /// required instead: on this machine they always hold, and a failure here
     /// is a real one worth seeing.
     private func bindWithoutListening(at path: String) throws {
+        Darwin.close(try bind(at: path))
+    }
+
+    /// A bound `AF_UNIX` socket at `path`; the caller closes it.
+    private func bind(at path: String) throws -> Int32 {
         let descriptor = socket(AF_UNIX, SOCK_STREAM, 0)
         try #require(descriptor >= 0, "could not create a socket")
-        defer { Darwin.close(descriptor) }
 
         var address = sockaddr_un()
         address.sun_family = sa_family_t(AF_UNIX)
@@ -115,5 +186,6 @@ struct HerdrSocketClientTests {
             }
         }
         try #require(result == 0, "could not bind \(path): errno \(errno)")
+        return descriptor
     }
 }

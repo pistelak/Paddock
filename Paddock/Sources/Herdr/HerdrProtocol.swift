@@ -22,10 +22,10 @@ struct EmptyParams: Encodable, Sendable {}
 /// only used to sanity-check the reply, never to match against a pending map.
 struct HerdrRequest<Params: Encodable & Sendable>: Encodable, Sendable {
     let id: String
-    let method: String
+    let method: HerdrMethod
     let params: Params
 
-    init(id: String = UUID().uuidString, method: String, params: Params) {
+    init(id: String = UUID().uuidString, method: HerdrMethod, params: Params) {
         self.id = id
         self.method = method
         self.params = params
@@ -40,7 +40,7 @@ struct HerdrRequest<Params: Encodable & Sendable>: Encodable, Sendable {
 }
 
 extension HerdrRequest where Params == EmptyParams {
-    init(id: String = UUID().uuidString, method: String) {
+    init(id: String = UUID().uuidString, method: HerdrMethod) {
         self.init(id: id, method: method, params: EmptyParams())
     }
 }

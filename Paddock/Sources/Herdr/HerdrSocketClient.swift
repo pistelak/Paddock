@@ -11,23 +11,18 @@ import os
 /// subscription list cannot be extended in place — the caller tears the stream
 /// down and asks for a new one with the full list.
 ///
-/// The actor exists to serialise request-id minting, not the I/O: every call
-/// suspends on its own connection, so a long-lived event stream never keeps
-/// `request(_:params:)` waiting.
-actor HerdrSocketClient {
+/// A plain value: there is nothing to serialise. Every call has a connection
+/// of its own, and the request id herdr echoes back is never matched against
+/// anything (see `HerdrResponse`), so `HerdrRequest`'s default id is enough.
+struct HerdrSocketClient: HerdrTransport, Sendable {
     /// Matches herdrm's per-request budget. Long enough that a busy herdr
     /// still answers, short enough that a wedged session surfaces in the UI.
     static let requestTimeout: Duration = .seconds(15)
 
-    private static let subscribeMethod = "events.subscribe"
-
     private static let log = Logger(subsystem: "com.radekpistelak.Paddock", category: "herdr-socket")
 
-    /// The socket this client is bound to. `nonisolated` so a caller can name
-    /// it in an error or a log line without awaiting the actor.
-    nonisolated let socketPath: String
-
-    private var requestCount = 0
+    /// The socket this client is bound to.
+    let socketPath: String
 
     init(socketPath: String) {
         self.socketPath = socketPath
@@ -43,10 +38,10 @@ actor HerdrSocketClient {
     /// herdr hangs up without answering, and a `DecodingError` if the reply
     /// does not fit `R`.
     func request<R: Decodable & Sendable>(
-        _ method: String,
+        _ method: HerdrMethod,
         params: some Encodable & Sendable
     ) async throws -> R {
-        let line = try HerdrRequest(id: nextRequestID(), method: method, params: params).encodedLine()
+        let line = try HerdrRequest(method: method, params: params).encodedLine()
         let connection = try UnixSocketConnection(path: socketPath)
         defer { connection.close() }
 
@@ -58,12 +53,6 @@ actor HerdrSocketClient {
         } catch let error as HerdrRPCError {
             throw PaddockError.herdrRPC(method: method, code: error.code, message: error.message)
         }
-    }
-
-    /// `request(_:params:)` for the many methods that take no parameters.
-    /// herdr rejects a request without `params`, so `{}` still goes on the wire.
-    func request<R: Decodable & Sendable>(_ method: String) async throws -> R {
-        try await request(method, params: EmptyParams())
     }
 
     // MARK: - Events
@@ -90,8 +79,7 @@ actor HerdrSocketClient {
     /// all tear the connection down through `onTermination`.
     func events(_ subscriptions: [HerdrSubscription]) async throws -> AsyncThrowingStream<HerdrEventKind, Error> {
         let line = try HerdrRequest(
-            id: nextRequestID(),
-            method: Self.subscribeMethod,
+            method: .eventsSubscribe,
             params: EventsSubscribeParams(subscriptions)
         ).encodedLine()
         let connection = try UnixSocketConnection(path: socketPath)
@@ -102,17 +90,18 @@ actor HerdrSocketClient {
         // the handshake without risking a continuation-misuse crash.
         let (acknowledgement, acked) = AsyncThrowingStream<Void, Error>.makeStream()
 
-        // Detached on purpose: a `Task {}` here would inherit this actor's
-        // isolation and run the whole long-lived read loop on the actor,
-        // where it would sit between every `request(_:)` call. The loop
-        // touches nothing but the connection and the two continuations.
+        // Unstructured on purpose: the read loop lives as long as the
+        // subscription, which outlives this call by design. It is ended by
+        // the stream's `onTermination` below, never leaked. `events(_:)` is
+        // not isolated to anything, so there is no actor for the task to
+        // inherit and nothing it could block.
         let socketPath = socketPath
-        let reader = Task.detached {
+        let reader = Task {
             var isAcknowledged = false
             var skippedLines = 0
             do {
                 try connection.writeLine(line)
-                for try await data in connection.lines {
+                for try await data in try connection.makeLines() {
                     guard !data.isEmpty else { continue }
                     if isAcknowledged {
                         // A line that is not an event after the ack — a stray
@@ -136,7 +125,7 @@ actor HerdrSocketClient {
                     case let .response(response):
                         if let error = response.error {
                             throw PaddockError.herdrRPC(
-                                method: Self.subscribeMethod,
+                                method: .eventsSubscribe,
                                 code: error.code,
                                 message: error.message
                             )
@@ -153,7 +142,7 @@ actor HerdrSocketClient {
                 acked.finish(
                     throwing: isAcknowledged
                         ? nil
-                        : PaddockError.herdrConnectionClosed(method: Self.subscribeMethod)
+                        : PaddockError.herdrConnectionClosed(method: .eventsSubscribe)
                 )
                 events.finish()
             } catch {
@@ -173,10 +162,10 @@ actor HerdrSocketClient {
         }
 
         do {
-            try await Self.withTimeout(method: Self.subscribeMethod, interrupt: { connection.shutdown() }) {
+            try await Self.withTimeout(method: .eventsSubscribe, interrupt: { connection.shutdown() }) {
                 var iterator = acknowledgement.makeAsyncIterator()
                 guard try await iterator.next() != nil else {
-                    throw PaddockError.herdrConnectionClosed(method: Self.subscribeMethod)
+                    throw PaddockError.herdrConnectionClosed(method: .eventsSubscribe)
                 }
             }
         } catch {
@@ -198,9 +187,9 @@ actor HerdrSocketClient {
     }
 
     /// Reads the first non-empty line, or throws if herdr closes first.
-    private static func firstLine(from connection: UnixSocketConnection, method: String) async throws -> Data {
+    private static func firstLine(from connection: UnixSocketConnection, method: HerdrMethod) async throws -> Data {
         try await withTimeout(method: method, interrupt: { connection.shutdown() }) {
-            for try await line in connection.lines where !line.isEmpty {
+            for try await line in try connection.makeLines() where !line.isEmpty {
                 return line
             }
             throw PaddockError.herdrConnectionClosed(method: method)
@@ -211,7 +200,7 @@ actor HerdrSocketClient {
     /// blocked socket read ignores cancellation, so `interrupt` shuts the
     /// descriptor down for it to finish.
     private static func withTimeout<T: Sendable>(
-        method: String,
+        method: HerdrMethod,
         interrupt: @escaping @Sendable () -> Void,
         operation: @escaping @Sendable () async throws -> T
     ) async throws -> T {
@@ -220,12 +209,5 @@ actor HerdrSocketClient {
         } catch is Timeout.Expired {
             throw PaddockError.herdrTimeout(method: method)
         }
-    }
-
-    /// herdr echoes the id back but never matches it against anything, and a
-    /// connection only ever carries one request, so a counter is enough.
-    private func nextRequestID() -> String {
-        requestCount += 1
-        return String(requestCount)
     }
 }

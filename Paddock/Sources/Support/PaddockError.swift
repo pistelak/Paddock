@@ -9,10 +9,13 @@ enum PaddockError: Error, LocalizedError, Equatable {
     case unsupportedTabsFile(version: Int)
     case corruptTabsFile(String)
     case herdrSocketUnavailable(path: String)
-    case herdrRPC(method: String, code: String, message: String)
+    /// A second reader was asked for on a socket connection that already has
+    /// one; see `UnixSocketConnection.makeLines()`.
+    case herdrSocketAlreadyReading(path: String)
+    case herdrRPC(method: HerdrMethod, code: String, message: String)
     case herdrProtocolMismatch(found: Int)
-    case herdrTimeout(method: String)
-    case herdrConnectionClosed(method: String)
+    case herdrTimeout(method: HerdrMethod)
+    case herdrConnectionClosed(method: HerdrMethod)
 
     var errorDescription: String? {
         switch self {
@@ -32,6 +35,8 @@ enum PaddockError: Error, LocalizedError, Equatable {
             "The saved tab list is not usable: \(reason)."
         case let .herdrSocketUnavailable(path):
             "No herdr is listening on \(path). The session is probably not running yet."
+        case let .herdrSocketAlreadyReading(path):
+            "The connection to \(path) is already being read."
         case let .herdrRPC(method, code, message):
             "herdr rejected `\(method)`: \(message) (\(code))."
         case let .herdrProtocolMismatch(found):

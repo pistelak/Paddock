@@ -11,7 +11,7 @@ struct HerdrProtocolTests {
     // MARK: - Requests
 
     @Test func requestAlwaysCarriesAnEmptyParamsObject() throws {
-        let data = try HerdrRequest(id: "1", method: "session.snapshot").encodedLine()
+        let data = try HerdrRequest(id: "1", method: .sessionSnapshot).encodedLine()
         #expect(data.last == UInt8(ascii: "\n"))
 
         let object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
@@ -24,7 +24,7 @@ struct HerdrProtocolTests {
     @Test func requestEncodesTypedParams() throws {
         let request = HerdrRequest(
             id: "sub",
-            method: "events.subscribe",
+            method: .eventsSubscribe,
             params: EventsSubscribeParams([.workspaceFocused, .paneAgentStatusChanged(paneID: "w4:p1")])
         )
         let object = try #require(

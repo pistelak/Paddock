@@ -24,7 +24,7 @@ struct HerdrSocketClientLiveTests {
 
     @Test func pingReportsAProtocolVersion() async throws {
         let client = HerdrSocketClient(socketPath: socketPath)
-        let ping: PingResult = try await client.request("ping")
+        let ping: PingResult = try await client.request(.ping)
         #expect(!ping.version.isEmpty)
         #expect(ping.protocolVersion > 0)
     }
@@ -33,10 +33,10 @@ struct HerdrSocketClientLiveTests {
     /// request on the same client has to open its own connection.
     @Test func snapshotAndListDecodeAndTheClientIsReusable() async throws {
         let client = HerdrSocketClient(socketPath: socketPath)
-        let snapshot: SessionSnapshotResult = try await client.request("session.snapshot")
+        let snapshot: SessionSnapshotResult = try await client.request(.sessionSnapshot)
         #expect(!snapshot.snapshot.workspaces.isEmpty)
 
-        let list: WorkspaceListResult = try await client.request("workspace.list")
+        let list: WorkspaceListResult = try await client.request(.workspaceList)
         #expect(
             Set(list.workspaces.map(\.workspaceID))
                 == Set(snapshot.snapshot.workspaces.map(\.workspaceID))
@@ -61,7 +61,7 @@ struct HerdrSocketClientLiveTests {
         #expect(!replayed.isEmpty, "an idle session still replays its historical workspace events")
 
         // The connection is gone, but the client is not: requests still work.
-        let ping: PingResult = try await client.request("ping")
+        let ping: PingResult = try await client.request(.ping)
         #expect(ping.protocolVersion > 0)
     }
 
@@ -75,7 +75,7 @@ struct HerdrSocketClientLiveTests {
         let stream = try await streaming.events(HerdrSubscription.workspaceKinds)
 
         let start = ContinuousClock.now
-        let ping: PingResult = try await HerdrSocketClient(socketPath: socketPath).request("ping")
+        let ping: PingResult = try await HerdrSocketClient(socketPath: socketPath).request(.ping)
         #expect(ping.protocolVersion > 0)
         #expect(
             ContinuousClock.now - start < .seconds(5),
@@ -90,7 +90,7 @@ struct HerdrSocketClientLiveTests {
         let client = HerdrSocketClient(socketPath: socketPath)
         let error = try #require(
             await #expect(throws: PaddockError.self) {
-                let _: PingResult = try await client.request("no.such.method")
+                let _: PingResult = try await client.request(HerdrMethod(rawValue: "no.such.method"))
             },
             "expected herdr to reject the method"
         )
@@ -98,7 +98,7 @@ struct HerdrSocketClientLiveTests {
             Issue.record("unexpected \(error)")
             return
         }
-        #expect(method == "no.such.method")
+        #expect(method.rawValue == "no.such.method")
         #expect(code == "invalid_request")
     }
 
@@ -116,7 +116,7 @@ struct HerdrSocketClientLiveTests {
             Issue.record("unexpected \(error)")
             return
         }
-        #expect(method == "events.subscribe")
+        #expect(method == .eventsSubscribe)
     }
 
     @Test func aMissingSocketReportsTheSessionAsUnavailable() async throws {
@@ -126,7 +126,7 @@ struct HerdrSocketClientLiveTests {
             throws: PaddockError.herdrSocketUnavailable(path: path),
             "expected a connection failure"
         ) {
-            let _: PingResult = try await client.request("ping")
+            let _: PingResult = try await client.request(.ping)
         }
     }
 }

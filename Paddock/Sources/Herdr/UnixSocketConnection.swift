@@ -36,6 +36,10 @@ final class UnixSocketConnection: @unchecked Sendable {
         var isOpen = true
         /// A reader thread owns the descriptor and may be blocked in `read(2)`.
         var isReading = false
+        /// A reader was handed out at some point. Sticky, unlike `isReading`:
+        /// a connection carries exactly one exchange, so once its lines have
+        /// been read to EOF there is nothing left for a second reader.
+        var hasStartedReading = false
         /// `close()` came while a reader was running; the reader closes.
         var isCloseRequested = false
     }
@@ -92,18 +96,30 @@ final class UnixSocketConnection: @unchecked Sendable {
         self.descriptor = descriptor
     }
 
-    /// The socket's newline-delimited lines, read on a thread of its own.
+    /// Starts the connection's one reader thread and returns the socket's
+    /// newline-delimited lines.
     ///
-    /// Create this once per connection: every call starts another reader, and
-    /// two of them would race for the same bytes. Dropping the stream (or
-    /// cancelling the task iterating it) shuts the socket down, which ends the
-    /// thread with a clean EOF.
-    var lines: AsyncThrowingStream<Data, Error> {
-        AsyncThrowingStream { continuation in
-            // Claimed here, synchronously, rather than on the thread: a
-            // `close()` in between would otherwise pull the descriptor out from
-            // under a reader that has not started yet.
-            lifecycle.withLock { $0.isReading = true }
+    /// One per connection, enforced: a second call throws
+    /// `PaddockError.herdrSocketAlreadyReading` — whether the first reader is
+    /// still running or has already finished. Two concurrent readers would
+    /// race for the same bytes and, worse, the first to finish would hand the
+    /// descriptor back while the other was still blocked in `read(2)` on it,
+    /// exactly the reuse hazard the lifecycle lock exists to prevent; a reader
+    /// after EOF would read a connection herdr has already closed. A call on a
+    /// closed connection throws `herdrSocketUnavailable`. Dropping the stream
+    /// (or cancelling the task iterating it) shuts the socket down, which ends
+    /// the thread with a clean EOF.
+    func makeLines() throws -> AsyncThrowingStream<Data, Error> {
+        // Claimed here, synchronously, rather than on the thread: a `close()`
+        // in between would otherwise pull the descriptor out from under a
+        // reader that has not started yet.
+        try lifecycle.withLock { state in
+            guard state.isOpen else { throw PaddockError.herdrSocketUnavailable(path: path) }
+            guard !state.hasStartedReading else { throw PaddockError.herdrSocketAlreadyReading(path: path) }
+            state.hasStartedReading = true
+            state.isReading = true
+        }
+        return AsyncThrowingStream { continuation in
             continuation.onTermination = { [self] _ in shutdown() }
 
             let thread = Thread { [self] in

@@ -21,10 +21,9 @@ extension WorkspaceStore {
     /// A pure safety net. Nothing should be able to reconnect in a tight loop
     /// any more — only a snapshot can change the pane set, and no event is
     /// applied at all — but every subscribe replays a backlog and costs herdr a
-    /// stream, so
-    /// a bug that does slip through must degrade to one stream per second
-    /// instead of the ~11k-per-run hot loop that was observed. It applies
-    /// across `restart()` too, which `scheduleResync()` calls.
+    /// stream, so a bug that does slip through must degrade to one stream per
+    /// second instead of the ~11k-per-run hot loop that was observed. It
+    /// applies across `restart()` too.
     static let minimumTimeBetweenConnections: Duration = .seconds(1)
 
     /// Why one connection attempt ended.
@@ -41,7 +40,8 @@ extension WorkspaceStore {
     func supervise() async {
         while !Task.isCancelled {
             guard await waitForConnectionSlot() else { return }
-            lastConnectionStart = .now
+            let clock = self.clock
+            lastConnectionStart = Self.now(of: clock)
             do {
                 switch try await runOneConnection() {
                 case .resubscribe:
@@ -60,7 +60,7 @@ extension WorkspaceStore {
             guard !Task.isCancelled else { return }
             // Not `try?`: swallowing cancellation here would keep a stopped
             // store reconnecting.
-            do { try await Task.sleep(for: .seconds(backoff.next())) } catch { return }
+            do { try await clock.sleep(for: .seconds(backoff.next())) } catch { return }
         }
     }
 
@@ -70,13 +70,21 @@ extension WorkspaceStore {
     /// previous attempt started. Returns `false` if the task was cancelled
     /// while waiting, so the caller stops instead of connecting anyway.
     private func waitForConnectionSlot() async -> Bool {
-        guard let last = lastConnectionStart else { return true }
-        let remaining = Self.minimumTimeBetweenConnections - (ContinuousClock.now - last)
+        let clock = self.clock
+        let remaining = remainingConnectionFloor(on: clock)
         guard remaining > .zero else { return true }
         // Not `try?`: swallowing cancellation here would keep a stopped store
         // reconnecting.
-        do { try await Task.sleep(for: remaining) } catch { return false }
+        do { try await clock.sleep(for: remaining) } catch { return false }
         return !Task.isCancelled
+    }
+
+    /// The existential `clock` is opened into a concrete `C` here so the stored
+    /// instant can be compared with the clock's own `now`; an instant from
+    /// another clock (there is none) would simply read as "no floor".
+    private func remainingConnectionFloor<C: Clock<Duration>>(on clock: C) -> Duration {
+        guard let last = lastConnectionStart as? C.Instant else { return .zero }
+        return Self.minimumTimeBetweenConnections - last.duration(to: clock.now)
     }
 
     /// One full attempt: ping, subscribe, snapshot, then let the stream ask for
@@ -90,19 +98,13 @@ extension WorkspaceStore {
     /// rows, because no event is ever applied. That is the whole reason herdr's
     /// unmarked, stale backlog replay is harmless here; see
     /// `WorkspaceEventPolicy`.
-    ///
-    /// **No task group.** Nothing runs concurrently any more: the snapshot is
-    /// awaited, then the loop reads events. A quiet session parks in `next()`
-    /// for ever, which is fine — `connection` and the rows were both settled by
-    /// the snapshot before the loop started, and the subscription list is
-    /// re-checked by every resync, not by this loop.
     private func runOneConnection() async throws -> SessionOutcome {
         setConnection(.connecting)
 
         // The socket has no handshake, so `ping` doubles as the reachability
         // check: a session that is not running fails here with
         // `herdrSocketUnavailable` before any state is touched.
-        let ping: PingResult = try await client.request("ping")
+        let ping: PingResult = try await transport.request(.ping)
         let connected: WorkspaceStore.ConnectionState = ping.protocolVersion == HerdrProtocol.supported
             ? .live
             : .unsupportedProtocol(ping.protocolVersion)
@@ -127,6 +129,16 @@ extension WorkspaceStore {
         setConnection(connected)
 
         isConsumed = true
+        return try await follow(opened)
+    }
+
+    /// The event loop of one connection. Nothing runs concurrently here: the
+    /// snapshot was awaited, then the loop reads events and hands each to
+    /// `handle(_:)`, which asks the resync pump for a snapshot. A quiet
+    /// session parks in `next()` for ever, which is fine — `connection` and
+    /// the rows were both settled by the snapshot before the loop started, and
+    /// the subscription list is re-checked by every resync, not by this loop.
+    private func follow(_ opened: OpenedEvents) async throws -> SessionOutcome {
         for try await kind in opened.stream {
             handle(kind)
         }
@@ -154,12 +166,12 @@ extension WorkspaceStore {
     /// and a second rejection is a real failure worth backing off from.
     private func openEvents(_ requested: [HerdrSubscription]) async throws -> OpenedEvents {
         do {
-            return OpenedEvents(stream: try await client.events(requested), subscriptions: requested)
+            return OpenedEvents(stream: try await transport.events(requested), subscriptions: requested)
         } catch let error as PaddockError {
             guard case let .herdrRPC(_, code, _) = error, code == Self.paneNotFoundCode else { throw error }
             try await refreshFromSnapshot()
             let retried = Self.subscriptions(for: state)
-            return OpenedEvents(stream: try await client.events(retried), subscriptions: retried)
+            return OpenedEvents(stream: try await transport.events(retried), subscriptions: retried)
         }
     }
 

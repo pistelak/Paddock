@@ -258,16 +258,16 @@ struct WorkspaceStoreHardeningLiveTests {
         // `herdr session list` calls the session running a moment before its
         // socket answers, so the first request may still be refused.
         try await waitUntil(timeout: .seconds(20)) {
-            (try? await client.request("workspace.list") as WorkspaceListResult) != nil
+            (try? await client.request(.workspaceList) as WorkspaceListResult) != nil
         }
-        let existing: WorkspaceListResult = try await client.request("workspace.list")
+        let existing: WorkspaceListResult = try await client.request(.workspaceList)
         guard existing.workspaces.isEmpty else { return }
-        let _: HerdrResultTag = try await client.request(
-            "workspace.create",
+        try await client.send(
+            .workspaceCreate,
             params: WorkspaceCreateParams(label: qaSession.rawValue, focus: true)
         )
         try await waitUntil(timeout: .seconds(10)) {
-            let list = try? await client.request("workspace.list") as WorkspaceListResult
+            let list = try? await client.request(.workspaceList) as WorkspaceListResult
             return list?.workspaces.isEmpty == false
         }
     }

@@ -28,6 +28,14 @@ import Foundation
 /// seconds after every connect. Refetching instead is bounded work
 /// (`minimumSnapshotInterval`) and always lands on the present.
 ///
+/// **Everything that waits, waits on `clock`.** The reconnect backoff, the
+/// pause between snapshot retries, the floor between connection attempts and
+/// the coalescing of events into snapshots all take their time from the
+/// injected clock, and herdr itself is reached only through `transport`. That
+/// is what lets the whole machine be driven through every transition in
+/// milliseconds by a scripted peer and a manual clock — the live suites keep
+/// the parts only a real herdr can prove.
+///
 /// **The supervising task retains the store while it runs**, so a store that
 /// is started and then dropped without `stop()` stays alive with its socket
 /// open. Whoever owns the store (the tab coordinator) must call `stop()` when
@@ -60,23 +68,28 @@ final class WorkspaceStore {
         }
     }
 
-    /// How many snapshot failures in a row a pump tolerates while the event
-    /// stream is still up, and the pause between them.
+    /// How many snapshot failures in a row the event loop tolerates while the
+    /// stream is still up, and the pause between them. The last failure ends
+    /// the connection: the supervisor reports `.reconnecting` and tries again
+    /// on the backoff, so a herdr that answers events but not snapshots can
+    /// never leave stale rows on screen under a footer that says nothing.
     static let maximumSnapshotFailures = 3
     static let snapshotFailurePause: Duration = .seconds(1)
 
     /// The floor between the *starts* of two `session.snapshot` requests, which
     /// is also the window a burst of events coalesces in.
     ///
-    /// The debounce is leading-edge: the first event after a quiet spell
-    /// refetches straight away, so the pill follows a click or a `herdr
-    /// workspace focus` within about ten milliseconds. Everything that arrives
-    /// while that snapshot is in flight, or inside the floor behind it, folds
-    /// into one trailing refetch. herdr's 100 ms backlog replay therefore costs
-    /// at most four snapshots a second instead of one per event, and a nine
-    /// second replay costs ~36 requests that each cost nothing to apply
-    /// (`WorkspaceListState` is `Equatable`; an unchanged state is not a
-    /// render).
+    /// Leading-edge: the first event after a quiet spell refetches straight
+    /// away, so the pill follows a click or a `herdr workspace focus` within
+    /// about ten milliseconds. Everything that arrives while that snapshot is
+    /// in flight, or inside the floor behind it, folds into one trailing
+    /// refetch — *guaranteed*, even if no further event ever comes, which is
+    /// why this is hand-rolled rather than swift-async-algorithms' `throttle`
+    /// (that one only releases a held element when the next element arrives).
+    /// herdr's 100 ms backlog replay therefore costs at most four snapshots a
+    /// second instead of one per event, and a nine second replay costs ~36
+    /// requests that each cost nothing to apply (`WorkspaceListState` is
+    /// `Equatable`; an unchanged state is not a render).
     static let minimumSnapshotInterval: Duration = .milliseconds(250)
 
     let sessionName: SessionName
@@ -89,7 +102,8 @@ final class WorkspaceStore {
     /// per main-actor turn. Never called after `stop()`.
     var onChange: (() -> Void)?
 
-    let client: HerdrSocketClient
+    let transport: any HerdrTransport
+    let clock: any Clock<Duration>
 
     private var supervisor: Task<Void, Never>?
     private var resync: Task<Void, Never>?
@@ -105,20 +119,26 @@ final class WorkspaceStore {
     /// Guards against a pane set that keeps changing between the subscribe and
     /// the snapshot: reconnecting without a pause is only free a few times.
     var consecutiveResubscribes = 0
-    /// When the last connection attempt began, so `supervise()` can enforce a
-    /// floor between two of them. Kept on the store rather than in the loop
-    /// because `restart()` replaces the loop — a resync that changes the pane
-    /// set does exactly that — and the floor has to survive it.
-    var lastConnectionStart: ContinuousClock.Instant?
+    /// When the last connection attempt began, on `clock`, so `supervise()`
+    /// can enforce a floor between two of them. Kept on the store rather than
+    /// in the loop because `restart()` replaces the loop and the floor has to
+    /// survive it. Erased, because the store is not generic over its clock;
+    /// the supervisor reads it back through the clock's own instant type.
+    var lastConnectionStart: (any InstantProtocol<Duration>)?
 
-    /// `client` is injectable so a test can point the store at a socket of its
-    /// own; there is deliberately no protocol seam, because everything worth
-    /// testing without herdr (the subscription list, the backoff, the error
-    /// mapping) is a pure function on this type.
-    init(sessionName: SessionName, socketPath: String, client: HerdrSocketClient? = nil) {
+    /// `transport` and `clock` are injectable so a test can drive the store
+    /// with a scripted herdr and a manual clock; the app passes neither and
+    /// gets the real socket client and `ContinuousClock`.
+    init(
+        sessionName: SessionName,
+        socketPath: String,
+        transport: (any HerdrTransport)? = nil,
+        clock: any Clock<Duration> = ContinuousClock()
+    ) {
         self.sessionName = sessionName
         self.socketPath = socketPath
-        self.client = client ?? HerdrSocketClient(socketPath: socketPath)
+        self.transport = transport ?? HerdrSocketClient(socketPath: socketPath)
+        self.clock = clock
     }
 
     // MARK: - Lifecycle
@@ -181,33 +201,21 @@ final class WorkspaceStore {
     // exactly the same path. Errors are rethrown for the caller to show.
 
     func focus(_ workspaceID: String) async throws {
-        let _: HerdrResultTag = try await client.request(
-            "workspace.focus",
-            params: WorkspaceTargetParams(workspaceID)
-        )
+        try await transport.send(.workspaceFocus, params: WorkspaceTargetParams(workspaceID))
     }
 
     /// Creates a space and moves herdr to it, so the TUI and the column agree
     /// about where the user is.
     func create(label: String?) async throws {
-        let _: HerdrResultTag = try await client.request(
-            "workspace.create",
-            params: WorkspaceCreateParams(label: label, focus: true)
-        )
+        try await transport.send(.workspaceCreate, params: WorkspaceCreateParams(label: label, focus: true))
     }
 
     func rename(_ workspaceID: String, to label: String) async throws {
-        let _: HerdrResultTag = try await client.request(
-            "workspace.rename",
-            params: WorkspaceRenameParams(workspaceID: workspaceID, label: label)
-        )
+        try await transport.send(.workspaceRename, params: WorkspaceRenameParams(workspaceID: workspaceID, label: label))
     }
 
     func close(_ workspaceID: String) async throws {
-        let _: HerdrResultTag = try await client.request(
-            "workspace.close",
-            params: WorkspaceTargetParams(workspaceID)
-        )
+        try await transport.send(.workspaceClose, params: WorkspaceTargetParams(workspaceID))
     }
 
     // MARK: - State
@@ -222,13 +230,18 @@ final class WorkspaceStore {
         // Recorded here rather than in the pump so that *every* snapshot — the
         // connection's first one, the `pane_not_found` retry, a resync — feeds
         // the same rate floor.
-        lastSnapshotStart = .now
-        let result: SessionSnapshotResult = try await client.request("session.snapshot")
+        // A local copy: the compiler opens an existential passed as an argument
+        // only when it is not a stored-property access.
+        let clock = self.clock
+        lastSnapshotStart = Self.now(of: clock)
+        let result: SessionSnapshotResult = try await transport.request(.sessionSnapshot)
         apply(WorkspaceListState(snapshot: result.snapshot))
         return state
     }
 
-    func apply(_ newState: WorkspaceListState) {
+    /// The one writer of `state`, and private so it stays that way: every
+    /// value it is handed came out of a `session.snapshot`.
+    private func apply(_ newState: WorkspaceListState) {
         guard isRunning, newState != state else { return }
         state = newState
         markDirty()
@@ -257,9 +270,10 @@ final class WorkspaceStore {
     /// cancelled tasks.
     private var needsSnapshot = false
 
-    /// When the most recent `session.snapshot` request went out, for the rate
-    /// floor. Set inside `refreshFromSnapshot()`, so every caller feeds it.
-    private var lastSnapshotStart: ContinuousClock.Instant?
+    /// When the most recent `session.snapshot` request went out, on `clock`,
+    /// for the rate floor. Set inside `refreshFromSnapshot()`, so every caller
+    /// feeds it. Erased like `lastConnectionStart`, and for the same reason.
+    private var lastSnapshotStart: (any InstantProtocol<Duration>)?
 
     /// Records that the world may have moved and makes sure a snapshot
     /// follows: immediately if none has gone out for `minimumSnapshotInterval`,
@@ -285,6 +299,12 @@ final class WorkspaceStore {
     /// as the last `needsSnapshot` check, so an event that arrives after that
     /// check always finds `resync == nil` and starts a fresh pump: no request
     /// can be swallowed by the hand-over.
+    ///
+    /// **A snapshot that keeps failing ends the connection.** After
+    /// `maximumSnapshotFailures` in a row the store reports `.reconnecting`
+    /// and restarts, instead of going quiet while the footer still says live:
+    /// the stream may well be healthy, but rows nobody can refresh are stale,
+    /// and a reconnect is the one thing that always ends in a snapshot.
     private func pumpSnapshots() async {
         defer { resync = nil }
         var failures = 0
@@ -299,14 +319,14 @@ final class WorkspaceStore {
             do {
                 try await refreshFromSnapshot()
             } catch {
-                // The world still changed, so the invalidation is kept and
-                // retried after a pause. A session that is really gone ends
-                // the event stream instead, and the supervisor's reconnect
-                // snapshots anyway; that story is not reported from here.
                 needsSnapshot = true
                 failures += 1
-                guard failures < Self.maximumSnapshotFailures else { return }
-                do { try await Task.sleep(for: Self.snapshotFailurePause) } catch { return }
+                guard failures < Self.maximumSnapshotFailures else {
+                    guard isRunning, !Task.isCancelled else { return }
+                    setConnection(Self.connectionState(for: error))
+                    return restart()
+                }
+                do { try await clock.sleep(for: Self.snapshotFailurePause) } catch { return }
                 continue
             }
             failures = 0
@@ -319,12 +339,23 @@ final class WorkspaceStore {
     /// snapshot went out. Returns `false` if the store was stopped or the task
     /// cancelled while waiting.
     private func waitForSnapshotSlot() async -> Bool {
-        guard let last = lastSnapshotStart else { return true }
-        let remaining = WorkspaceStore.minimumSnapshotInterval - (ContinuousClock.now - last)
+        let clock = self.clock
+        let remaining = remainingSnapshotFloor(on: clock)
         guard remaining > .zero else { return true }
         // Not `try?`: swallowing cancellation here would snapshot after stop().
-        do { try await Task.sleep(for: remaining) } catch { return false }
+        do { try await clock.sleep(for: remaining) } catch { return false }
         return isRunning && !Task.isCancelled
+    }
+
+    private func remainingSnapshotFloor<C: Clock<Duration>>(on clock: C) -> Duration {
+        guard let last = lastSnapshotStart as? C.Instant else { return .zero }
+        return Self.minimumSnapshotInterval - last.duration(to: clock.now)
+    }
+
+    /// The existential `clock` opened into a concrete type so its instant can
+    /// be stored (erased) and later compared with the same clock's `now`.
+    static func now<C: Clock<Duration>>(of clock: C) -> any InstantProtocol<Duration> {
+        clock.now
     }
 
     // MARK: - Coalescing

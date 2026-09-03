@@ -4,9 +4,10 @@ import Testing
 
 /// Covers the parts of the store that are pure: the subscription list it
 /// builds from a state, the reconnect schedule and the error-to-footer
-/// mapping. `HerdrSocketClient` is an actor with no protocol seam on purpose,
-/// so the socket itself is exercised by `WorkspaceStoreLiveTests` against a
-/// real herdr instead of by a mock that would only assert its own fiction.
+/// mapping. The connection machine itself is driven through every transition
+/// in `WorkspaceStoreMachineTests` with a scripted transport and a manual
+/// clock; the socket is exercised by `WorkspaceStoreLiveTests` against a real
+/// herdr.
 ///
 /// The one behavioural test here needs no herdr: a socket path that does not
 /// exist fails immediately with `ENOENT`, which is exactly the "session not
@@ -114,7 +115,7 @@ struct WorkspaceStoreTests {
     }
 
     @Test func anRPCErrorReadsAsReconnectingWithItsMessage() {
-        let error = PaddockError.herdrRPC(method: "ping", code: "invalid_request", message: "nope")
+        let error = PaddockError.herdrRPC(method: .ping, code: "invalid_request", message: "nope")
         guard case let .reconnecting(message) = WorkspaceStore.connectionState(for: error) else {
             Issue.record("expected .reconnecting")
             return
@@ -123,7 +124,7 @@ struct WorkspaceStoreTests {
     }
 
     @Test func aTimeoutReadsAsReconnecting() {
-        let state = WorkspaceStore.connectionState(for: PaddockError.herdrTimeout(method: "session.snapshot"))
+        let state = WorkspaceStore.connectionState(for: PaddockError.herdrTimeout(method: .sessionSnapshot))
         guard case let .reconnecting(message) = state else {
             Issue.record("expected .reconnecting")
             return
