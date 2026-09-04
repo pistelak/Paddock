@@ -1,5 +1,6 @@
 # Cuts a release: a signed universal zip on GitHub Releases and a new item in
-# the Sparkle appcast on GitHub Pages. See docs/releasing.md.
+# the Sparkle appcast on GitHub Pages. The whole loop, a release by hand, and
+# recovery are described in docs/releasing.md.
 #
 # Runs on its own when a push to main changes the libghostty pin in
 # project.yml (Renovate's automerged bump), and by hand with a chosen bump.
