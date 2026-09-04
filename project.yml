@@ -9,7 +9,8 @@ options:
 packages:
   # Exact pins: the generated project and its Package.resolved are not
   # committed, so these lines are the only lock. Renovate bumps them
-  # (see renovate.json); a libghostty bump merged to main cuts a release.
+  # (see renovate.json); a libghostty bump merged to main cuts a release
+  # (see docs/releasing.md).
   GhosttyKit:
     url: https://github.com/Lakr233/libghostty-spm.git
     exactVersion: 1.5.2
