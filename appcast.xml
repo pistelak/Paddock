@@ -1,0 +1,18 @@
+<?xml version="1.0" standalone="yes"?>
+<rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
+    <channel>
+        <title>Paddock</title>
+        <item>
+            <title>0.2.0</title>
+            <pubDate>Fri, 04 Sep 2026 16:46:33 +0000</pubDate>
+            <link>https://github.com/pistelak/Paddock</link>
+            <sparkle:version>0.2.0</sparkle:version>
+            <sparkle:shortVersionString>0.2.0</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+            <description><![CDATA[<ul><li>libghostty-spm 1.5.2</li></ul>
+<p><a href="https://github.com/pistelak/Paddock/releases/tag/v0.2.0">Full release notes on GitHub</a></p>
+]]></description>
+            <enclosure url="https://github.com/pistelak/Paddock/releases/download/v0.2.0/Paddock-0.2.0.zip" length="11388154" type="application/octet-stream" sparkle:edSignature="lXQzYckrAd1dZyNyhdMpcLEsmwhd0+M3nrhltD4lADYIiyqCj4QVrmDS/NcsMaMiMUm2/asUbHrtCII73zVnAg=="/>
+        </item>
+    </channel>
+</rss>
