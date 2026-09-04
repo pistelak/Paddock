@@ -42,7 +42,7 @@ jobs:
     outputs:
       changed: ${{ steps.compare.outputs.changed }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -77,7 +77,7 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       REPUBLISH_TAG: ${{ inputs.republish_tag }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -157,7 +157,7 @@ jobs:
           gh release create "v$VERSION" "build/Paddock-$VERSION.zip" "$@"
 
       - name: Check out the appcast
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
         with:
           ref: gh-pages
           path: pages
