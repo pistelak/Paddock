@@ -88,7 +88,8 @@ behind it. Renaming and recolouring are Paddock's own labels; the herdr session 
 **Files.** Drop files or folders onto a terminal and their paths are pasted at the prompt, shell-quoted
 when needed.
 
-**Hiding the sidebar.** View ▸ Hide Sidebar, or Ctrl+Cmd+S. Paddock remembers the choice.
+**Hiding the sidebar.** View ▸ Hide Sidebar, or Ctrl+Cmd+S. Paddock remembers the choice. The sidebar
+follows the background hue of Ghostty's active light or dark theme.
 
 **Full screen.** Window ▸ Enter Full Screen, or Ctrl+Cmd+F, uses the standard macOS full-screen Space and
 animation. The title bar stays hidden until macOS reveals it at the top edge; use the same command to

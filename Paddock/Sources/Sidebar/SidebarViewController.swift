@@ -13,13 +13,29 @@ final class SidebarViewController: NSViewController {
     var onAction: ((SidebarAction, UUID) -> Void)?
     var onAdd: ((NSView) -> Void)?
 
+    private let terminalBackground: (NSAppearance) -> NSColor
     private let stack = NSStackView()
     private let addButton = AddTabButton()
     private var items: [UUID: SessionTabItemView] = [:]
 
+    init(terminalBackground: @escaping (NSAppearance) -> NSColor) {
+        self.terminalBackground = terminalBackground
+        super.init(nibName: nil, bundle: nil)
+    }
+
+    @available(*, unavailable)
+    required init?(coder _: NSCoder) {
+        fatalError("init(coder:) is not supported")
+    }
+
     override func loadView() {
-        // A plain view on the window background; the split item owns the width.
-        view = NSView()
+        let background = SidebarBackgroundView()
+        background.onAppearanceChange = { [weak self, weak background] in
+            guard let self, let background else { return }
+            background.color = Self.sidebarColor(from: terminalBackground(background.effectiveAppearance))
+        }
+        view = background
+        background.onAppearanceChange?()
 
         stack.orientation = .vertical
         stack.alignment = .centerX
@@ -34,6 +50,25 @@ final class SidebarViewController: NSViewController {
             stack.centerXAnchor.constraint(equalTo: view.centerXAnchor),
             stack.bottomAnchor.constraint(lessThanOrEqualTo: view.bottomAnchor, constant: -12),
         ])
+    }
+
+    /// Keep the Ghostty hue, with enough separation to make the divider and
+    /// rail legible. Dark themes lift slightly; light themes shade slightly.
+    /// Blended in extended sRGB so a Display P3 background is not clipped
+    /// to the sRGB gamut on the way through.
+    static func sidebarColor(from terminalColor: NSColor) -> NSColor {
+        guard let color = terminalColor.usingColorSpace(.extendedSRGB) else { return terminalColor }
+        let luminance = 0.2126 * color.redComponent
+            + 0.7152 * color.greenComponent
+            + 0.0722 * color.blueComponent
+        let target: CGFloat = luminance < 0.5 ? 1 : 0
+        let fraction: CGFloat = luminance < 0.5 ? 0.07 : 0.04
+        func mix(_ component: CGFloat) -> CGFloat { component + (target - component) * fraction }
+        return NSColor(
+            colorSpace: .extendedSRGB,
+            components: [mix(color.redComponent), mix(color.greenComponent), mix(color.blueComponent), 1],
+            count: 4
+        )
     }
 
     /// `indicators` carries what each tile shows in its corner and says in its
@@ -107,5 +142,22 @@ final class SidebarViewController: NSViewController {
             NSBezierPath(roundedRect: rect, xRadius: 3, yRadius: 3).fill()
             return true
         }
+    }
+}
+
+private final class SidebarBackgroundView: NSView {
+    var color: NSColor = .windowBackgroundColor {
+        didSet { needsDisplay = true }
+    }
+    var onAppearanceChange: (() -> Void)?
+
+    override func draw(_ dirtyRect: NSRect) {
+        color.setFill()
+        dirtyRect.fill()
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        onAppearanceChange?()
     }
 }

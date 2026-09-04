@@ -27,6 +27,8 @@ targets:
     dependencies:
       - package: GhosttyKit
         product: GhosttyTerminal
+      - package: GhosttyKit
+        product: GhosttyKit
     info:
       path: Paddock/Info.plist
       properties:

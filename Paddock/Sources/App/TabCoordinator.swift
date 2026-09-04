@@ -16,7 +16,7 @@ final class TabCoordinator {
     let host: TerminalHost
     let herdrExecutable: URL
     let herdr: HerdrCLI
-    let sidebar = SidebarViewController()
+    let sidebar: SidebarViewController
     let panes = PaneContainerViewController()
     weak var window: NSWindow?
 
@@ -44,6 +44,9 @@ final class TabCoordinator {
         self.defaults = defaults
         self.registry = registry
         herdr = HerdrCLI(executableURL: herdrExecutable)
+        sidebar = SidebarViewController { appearance in
+            host.backgroundColor(for: appearance)
+        }
         selectedTabID = defaults.string(forKey: Self.selectedTabKey).flatMap(UUID.init(uuidString:))
     }
 

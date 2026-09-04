@@ -34,7 +34,10 @@ odd. The user-facing guide is the [README](../README.md).
 - When herdr detaches or exits, the pane shows an overlay with a Reattach button.
 - The window uses the traditional Terminal-style arrangement: a standard title bar, no toolbar, and a
   regular fixed-width split item containing the 64 pt custom sidebar. The sidebar therefore has no
-  authority over the window chrome. View ▸ Hide Sidebar (Ctrl+Cmd+S) remembers the choice.
+  authority over the window chrome. Its background is read from the controller's effective Ghostty
+  configuration through `ghostty_config_get`, interpreted in the configured `window-colorspace`, then
+  shifted slightly toward white for dark themes or black for light themes to separate it from the
+  terminal. View ▸ Hide Sidebar (Ctrl+Cmd+S) remembers the choice.
 - Window ▸ Enter Full Screen (Ctrl+Cmd+F) goes directly through `NSWindow.toggleFullScreen(_:)`. AppKit
   owns the separate Space, transition, safe area, top-edge title-bar reveal and traffic lights. With no
   toolbar installed, the reveal contains only the compact system title bar.
