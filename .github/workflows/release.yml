@@ -85,7 +85,7 @@ jobs:
         run: brew install xcodegen
 
       - name: Cache Swift packages
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: DerivedData/SourcePackages
           key: ${{ runner.os }}-spm-${{ hashFiles('project.yml') }}
