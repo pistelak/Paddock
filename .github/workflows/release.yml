@@ -42,7 +42,7 @@ jobs:
     outputs:
       changed: ${{ steps.compare.outputs.changed }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -77,7 +77,7 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       REPUBLISH_TAG: ${{ inputs.republish_tag }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -157,7 +157,7 @@ jobs:
           gh release create "v$VERSION" "build/Paddock-$VERSION.zip" "$@"
 
       - name: Check out the appcast
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
         with:
           ref: gh-pages
           path: pages
@@ -180,15 +180,17 @@ jobs:
           git commit -m "appcast: Paddock $VERSION" || echo "appcast unchanged"
           git push
 
+      # No .nojekyll: an artifact deployment is served exactly as uploaded,
+      # Jekyll never runs over it, and upload-pages-artifact v5 excludes
+      # dotfiles from the artifact anyway.
       - name: Stage the Pages site
         run: |
           mkdir -p site
           cp pages/appcast.xml site/
-          touch site/.nojekyll
 
-      - uses: actions/upload-pages-artifact@v3
+      - uses: actions/upload-pages-artifact@v5
         with:
           path: site
 
       - id: deploy
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5
