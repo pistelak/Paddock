@@ -1,6 +1,8 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": ["config:recommended"],
+  "description": "mode full overrides the hosted app's account-level Silent default, which would otherwise scan without ever opening a pull request.",
+  "mode": "full",
   "enabledManagers": ["custom.regex", "github-actions"],
   "customManagers": [
     {
