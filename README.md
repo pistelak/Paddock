@@ -1,8 +1,6 @@
 <p align="center">
   <img src="Paddock/Resources/AppIcon.icon/Assets/mark.svg" width="160" alt="Paddock icon: an Australian Shepherd watching a small herd behind a fence">
 </p>
-<!-- TODO: add docs/screenshot.png of the window with two or three session tabs once the tab indicators land -->
-
 <h1 align="center">Paddock</h1>
 
 <p align="center"><strong>A paddock for your herdr sessions.</strong></p>
@@ -10,7 +8,7 @@
 <p align="center">
   A small native macOS app that gives every <a href="https://herdr.dev">herdr</a> session its own side tab
   inside a real <a href="https://ghostty.org">Ghostty</a> terminal, so your AI coding agents stay in their pens
-  and you can see which one is waiting for you.
+  and you can see which one is waiting for you. Paddock is a lean window around herdr; herdr does the work.
 </p>
 
 ---
@@ -28,8 +26,9 @@ that says what its agents are doing.
   [libghostty](https://github.com/Lakr233/libghostty-spm). Paddock loads your `~/.config/ghostty/config`,
   so theme, font, padding, light and dark switching and keybindings are the ones you already have; the only
   settings it adds are the ones needed to launch herdr in each tab.
-- **Work and personal never touch.** `herdr --session work` and `herdr --session personal` are separate
-  herdr servers with separate agents and separate sockets. Paddock just puts them side by side.
+- **Work and personal stay separate herdr sessions.** `herdr --session work` and `herdr --session personal`
+  are separate herdr servers with separate agents and separate sockets. Paddock puts them side by side in
+  one window; it does not merge them.
 - **It knows when an agent needs you.** A tab shows a red badge with a number when spaces in that
   session have an agent waiting for your input, and how many. With nothing waiting, a green check means something
   finished that you have not looked at yet, and a quiet blue dot means work is still going on. Every tab
@@ -46,24 +45,33 @@ that says what its agents are doing.
 
 ## Install
 
-Paddock is built from source for now.
-
 **You need**
 
 - macOS 14 or newer
 - [herdr](https://herdr.dev) (`brew install herdr`)
-- Xcode 26 and [XcodeGen](https://github.com/yonaskolb/XcodeGen) (`brew install xcodegen`)
 
-**Build and run**
+**Download.** Get `Paddock-<version>.zip` from the
+[latest release](https://github.com/pistelak/Paddock/releases/latest), unzip it, and drag `Paddock.app` to
+`/Applications`. It has to live there (or somewhere else writable and permanent), because updates replace
+the app in place; running it from Downloads works once and then breaks updating.
 
-Clone the repository, then:
+**First launch.** Paddock is signed but not notarized, because there is no paid Apple developer account
+behind it. macOS therefore blocks the first launch. Open it once and let it be blocked, then go to System
+Settings ▸ Privacy & Security, scroll to the message about Paddock, and click **Open Anyway** (the button
+is only offered for a short while after the blocked attempt). Right-clicking and choosing Open no longer
+gets past this on macOS 15 and later. You do this once; updates installed by Paddock itself do not ask
+again.
 
-```sh
-make run
-```
+**Updates.** Paddock checks its update feed once a day and asks before installing anything. Paddock ▸
+Check for Updates… checks now. A new version is published automatically whenever
+[libghostty](https://github.com/Lakr233/libghostty-spm) ships a new build, so the terminal inside stays
+current with Ghostty.
 
-`make run` generates the Xcode project, builds it into `DerivedData`, and opens the app. Once you have it,
-drag `DerivedData/Build/Products/Debug/Paddock.app` to `/Applications` if you like.
+**Build from source instead.** With Xcode 26 and [XcodeGen](https://github.com/yonaskolb/XcodeGen)
+(`brew install xcodegen`), clone the repository and run `make run`: it generates the Xcode project, builds
+a debug app into `DerivedData`, and opens it. A build made this way reports version 0.0.0, never checks for
+updates, and logs libghostty debug output; it is for working on Paddock, not for daily use. `make release`
+builds the same signed zip the release workflow does.
 
 **One-time setup if your Ghostty config names a theme.** libghostty ships without theme files, so a
 `theme = …` line would make Ghostty reject your whole config. Link the themes from Ghostty.app once:
