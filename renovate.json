@@ -1,0 +1,28 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended"],
+  "enabledManagers": ["custom.regex", "github-actions"],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "The two Swift packages pinned in project.yml (the generated project and its Package.resolved are not committed).",
+      "managerFilePatterns": ["/^project\\.yml$/"],
+      "matchStrings": [
+        "url: https://github\\.com/(?<depName>Lakr233/libghostty-spm)\\.git\\s+exactVersion: (?<currentValue>\\d+\\.\\d+\\.\\d+)",
+        "url: https://github\\.com/(?<depName>sparkle-project/Sparkle)\\.git\\s+exactVersion: (?<currentValue>\\d+\\.\\d+\\.\\d+)"
+      ],
+      "datasourceTemplate": "github-releases",
+      "versioningTemplate": "semver",
+      "extractVersionTemplate": "^(?<version>\\d+\\.\\d+\\.\\d+)$"
+    }
+  ],
+  "packageRules": [
+    {
+      "description": "A libghostty bump merges itself once the test check is green; the push to main then cuts a release (see .github/workflows/release.yml). Strict semver keeps libghostty-spm's upstream.* and storage.* asset tags out.",
+      "matchDepNames": ["Lakr233/libghostty-spm"],
+      "automerge": true,
+      "automergeType": "pr",
+      "platformAutomerge": false
+    }
+  ]
+}

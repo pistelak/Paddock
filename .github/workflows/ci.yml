@@ -1,0 +1,34 @@
+name: test
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Cache Swift packages
+        uses: actions/cache@v4
+        with:
+          path: DerivedData/SourcePackages
+          key: ${{ runner.os }}-spm-${{ hashFiles('project.yml') }}
+
+      # Unit suites only: the live suites gate on PADDOCK_LIVE_HERDR=1 and
+      # never run here, so no herdr is needed.
+      - name: Unit tests
+        run: make test
+
+      # renovate@latest: the hosted app runs the latest release, and an older
+      # cached one rejects options it does not know yet.
+      - name: Validate renovate.json
+        run: npx --yes --package renovate@latest -- renovate-config-validator renovate.json

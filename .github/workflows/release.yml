@@ -1,0 +1,193 @@
+# Cuts a release: a signed universal zip on GitHub Releases and a new item in
+# the Sparkle appcast on GitHub Pages. See docs/releasing.md.
+#
+# Runs on its own when a push to main changes the libghostty pin in
+# project.yml (Renovate's automerged bump), and by hand with a chosen bump.
+# The version is the last v* tag plus the bump; nothing is committed to main.
+# Every step that can fail runs before the first step that publishes.
+name: release
+
+on:
+  push:
+    branches: [main]
+    paths: [project.yml]
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: Version bump
+        type: choice
+        options: [patch, minor, major]
+        default: patch
+      republish_tag:
+        description: >-
+          Recovery only: an existing tag (vX.Y.Z) whose appcast entry should
+          be rebuilt from the release asset. Skips tests, build and release.
+        type: string
+        default: ""
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+# One release at a time; a run already going is never cancelled.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  detect:
+    runs-on: ubuntu-latest
+    outputs:
+      changed: ${{ steps.compare.outputs.changed }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      # Compares the libghostty version value at HEAD with the one at the last
+      # release tag. Values, not lines: the first tag says `from: 1.5.2` and
+      # HEAD says `exactVersion: 1.5.2`, which is not a change. No tag at all
+      # means no automatic release; the first one is always dispatched.
+      - id: compare
+        run: |
+          libghostty_version() { awk '/libghostty-spm\.git/ { getline; print $2 }'; }
+          last=$(git describe --tags --abbrev=0 --match 'v[0-9]*' 2>/dev/null || true)
+          current=$(libghostty_version < project.yml)
+          previous=""
+          if [ -n "$last" ]; then
+            previous=$(git show "$last:project.yml" | libghostty_version)
+          fi
+          echo "last tag: '$last', libghostty then: '$previous', now: '$current'"
+          if [ -n "$last" ] && [ -n "$current" ] && [ -n "$previous" ] && [ "$current" != "$previous" ]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  release:
+    needs: detect
+    if: github.event_name == 'workflow_dispatch' || needs.detect.outputs.changed == 'true'
+    runs-on: macos-26
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPUBLISH_TAG: ${{ inputs.republish_tag }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Cache Swift packages
+        uses: actions/cache@v4
+        with:
+          path: DerivedData/SourcePackages
+          key: ${{ runner.os }}-spm-${{ hashFiles('project.yml') }}
+
+      # A manual dispatch may sit on a commit CI never saw.
+      - name: Unit tests
+        if: env.REPUBLISH_TAG == ''
+        run: make test
+
+      - name: Version
+        id: version
+        run: |
+          if [ -n "$REPUBLISH_TAG" ]; then
+            version="${REPUBLISH_TAG#v}"
+            last=$(git describe --tags --abbrev=0 --match 'v[0-9]*' "$REPUBLISH_TAG^" 2>/dev/null || true)
+          else
+            eval "$(scripts/next-version.sh "${{ inputs.bump || 'patch' }}")"
+            if git ls-remote --exit-code --tags origin "refs/tags/v$version" >/dev/null 2>&1; then
+              echo "tag v$version already exists" >&2
+              exit 1
+            fi
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "last=$last" >> "$GITHUB_OUTPUT"
+          echo "releasing $version (previous: '${last:-none}')"
+
+      - name: Build, sign and zip
+        if: env.REPUBLISH_TAG == ''
+        run: scripts/build-release.sh "${{ steps.version.outputs.version }}"
+
+      - name: Fetch the existing release asset
+        if: env.REPUBLISH_TAG != ''
+        run: |
+          mkdir -p build
+          gh release download "$REPUBLISH_TAG" --pattern '*.zip' --dir build
+
+      - name: Release notes
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          LAST: ${{ steps.version.outputs.last }}
+        run: |
+          libghostty_version() { awk '/libghostty-spm\.git/ { getline; print $2 }'; }
+          ref="${REPUBLISH_TAG:-HEAD}"
+          current=$(git show "$ref:project.yml" | libghostty_version)
+          previous=""
+          [ -n "$LAST" ] && previous=$(git show "$LAST:project.yml" | libghostty_version)
+          if [ -n "$previous" ] && [ "$previous" != "$current" ]; then
+            line="libghostty-spm $previous → $current"
+            link="https://github.com/Lakr233/libghostty-spm/releases/tag/$current"
+            printf '%s ([upstream release notes](%s))\n\n' "$line" "$link" > build/notes.md
+            printf '<ul><li>%s (<a href="%s">upstream release notes</a>)</li></ul>\n' "$line" "$link" > build/notes.html
+          else
+            printf 'libghostty-spm %s\n\n' "$current" > build/notes.md
+            printf '<ul><li>libghostty-spm %s</li></ul>\n' "$current" > build/notes.html
+          fi
+          printf '<p><a href="https://github.com/pistelak/Paddock/releases/tag/v%s">Full release notes on GitHub</a></p>\n' \
+            "$VERSION" >> build/notes.html
+
+      # `gh` creates the tag together with the release, so a failure earlier
+      # leaves no tag behind.
+      - name: Create the GitHub release
+        if: env.REPUBLISH_TAG == ''
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          LAST: ${{ steps.version.outputs.last }}
+        run: |
+          set -- --target "$GITHUB_SHA" --title "Paddock $VERSION" --notes-file build/notes.md --generate-notes
+          [ -n "$LAST" ] && set -- "$@" --notes-start-tag "$LAST"
+          gh release create "v$VERSION" "build/Paddock-$VERSION.zip" "$@"
+
+      - name: Check out the appcast
+        uses: actions/checkout@v5
+        with:
+          ref: gh-pages
+          path: pages
+
+      - name: Add the release to the appcast
+        env:
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+        run: scripts/appcast.sh "${{ steps.version.outputs.version }}" build/notes.html pages
+
+      # gh-pages keeps the feed's history. Pushing it with GITHUB_TOKEN does
+      # not trigger a Pages build, which is why the deploy step follows.
+      - name: Push the appcast to gh-pages
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          cd pages
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add appcast.xml
+          git commit -m "appcast: Paddock $VERSION" || echo "appcast unchanged"
+          git push
+
+      - name: Stage the Pages site
+        run: |
+          mkdir -p site
+          cp pages/appcast.xml site/
+          touch site/.nojekyll
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+      - id: deploy
+        uses: actions/deploy-pages@v4
