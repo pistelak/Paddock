@@ -4,3 +4,9 @@ DerivedData/
 .build/
 .DS_Store
 xcuserdata/
+.claude/
+build/
+# Sparkle signing key (lives in the Keychain and the repo secret; never in git)
+sparkle-private.key
+Sparkle-*.tar.xz
+sparkle-tools/

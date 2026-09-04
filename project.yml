@@ -7,16 +7,28 @@ options:
   createIntermediateGroups: true
   generateEmptyDirectories: true
 packages:
+  # Exact pins: the generated project and its Package.resolved are not
+  # committed, so these lines are the only lock. Renovate bumps them
+  # (see renovate.json); a libghostty bump merged to main cuts a release.
   GhosttyKit:
     url: https://github.com/Lakr233/libghostty-spm.git
-    from: 1.5.2
+    exactVersion: 1.5.2
+  Sparkle:
+    url: https://github.com/sparkle-project/Sparkle.git
+    exactVersion: 2.9.6
 settings:
   base:
     SWIFT_VERSION: "6"
     SWIFT_STRICT_CONCURRENCY: complete
     CODE_SIGN_STYLE: Automatic
-    MARKETING_VERSION: 0.1.0
-    CURRENT_PROJECT_VERSION: 1
+    # Ad-hoc. There is no Developer ID; a release build passes the same
+    # identity explicitly, and a future Developer ID overrides it there.
+    CODE_SIGN_IDENTITY: "-"
+    # Development placeholder. Releases are versioned from the git tag:
+    # scripts/build-release.sh overrides both on the xcodebuild command line,
+    # and a build that still says 0 never starts the updater.
+    MARKETING_VERSION: 0.0.0
+    CURRENT_PROJECT_VERSION: 0
 targets:
   Paddock:
     type: application
@@ -29,18 +41,35 @@ targets:
         product: GhosttyTerminal
       - package: GhosttyKit
         product: GhosttyKit
+      - package: Sparkle
+        product: Sparkle
     info:
       path: Paddock/Info.plist
       properties:
         CFBundleName: Paddock
         CFBundleDisplayName: Paddock
+        # XcodeGen would otherwise write literal 1.0 / 1 here.
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         NSPrincipalClass: NSApplication
         NSHighResolutionCapable: true
         LSApplicationCategoryType: public.app-category.developer-tools
         NSHumanReadableCopyright: "© 2026 Radek Pistelak. MIT License."
+        # Sparkle. The feed is published by .github/workflows/release.yml;
+        # the public key's private half signs every update there.
+        SUFeedURL: https://pistelak.github.io/Paddock/appcast.xml
+        SUPublicEDKey: xTmJVW74hu8bVUDdlcE6ct9NQvUBJYiK7OsEzS5tfxU=
+        SUEnableAutomaticChecks: true
+        SUAutomaticallyUpdate: false
+        SUAllowsAutomaticUpdates: false
+        SUVerifyUpdateBeforeExtraction: true
     entitlements:
       path: Paddock/Paddock.entitlements
-      properties: {}
+      properties:
+        # An ad-hoc signed app under the hardened runtime cannot load an
+        # ad-hoc signed Sparkle.framework (no Team ID to validate against).
+        # Notarization accepts this exception, so it can stay for Developer ID.
+        com.apple.security.cs.disable-library-validation: true
     settings:
       base:
         ENABLE_APP_SANDBOX: NO
