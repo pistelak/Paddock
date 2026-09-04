@@ -110,13 +110,15 @@ struct HerdrSocketClient: HerdrTransport, Sendable {
                         // it. It is counted and logged so that a herdr change
                         // that makes *every* line unreadable is visible
                         // somewhere, instead of surfacing as an indicator that
-                        // quietly stops updating.
+                        // quietly stops updating. The line itself stays out
+                        // of the log: it is whatever the daemon wrote, which
+                        // can carry paths or prompt text.
                         if let kind = Self.decodeEventKind(data) {
                             events.yield(kind)
                         } else {
                             skippedLines += 1
                             Self.log.debug(
-                                "skipped non-event line #\(skippedLines) on \(socketPath, privacy: .public): \(String(decoding: data.prefix(200), as: UTF8.self), privacy: .public)"
+                                "skipped non-event line #\(skippedLines) (\(data.count) bytes) on \(socketPath, privacy: .private)"
                             )
                         }
                         continue

@@ -9,12 +9,14 @@ import Testing
 /// Disabled unless `PADDOCK_LIVE_HERDR=1`, like the other live suites; see
 /// `WorkspaceStoreLiveTests` for the `.xctestrun` recipe.
 ///
-/// Everything destructive happens to one throwaway session — `paddock-qa` by
-/// default, `PADDOCK_LIVE_HERDR_QA_SESSION` to override — which the suite
-/// starts headlessly (`herdr --session <name> server`) and stops again, and
-/// then gives a space of its own — see `ensureQASpace()`, a headless session
-/// has none. No session the user is working in is ever stopped; `work` and
-/// `default` are only read from.
+/// Everything destructive happens to one throwaway session — `paddock-qa-`
+/// plus a random suffix by default, `PADDOCK_LIVE_HERDR_QA_SESSION` to
+/// override — which the suite starts headlessly (`herdr --session <name>
+/// server`) and stops again, and then gives a space of its own — see
+/// `ensureQASpace()`, a headless session has none. The suite refuses a
+/// session that already exists, running or stopped, so an override can never
+/// point it at a session with the user's data in it. No session the user is
+/// working in is ever stopped; `work` and `default` are only read from.
 ///
 /// Swift Testing has no async teardown (`deinit` cannot await), so the session
 /// lifecycle is a scoped helper: every test runs inside `withQASession`, which
@@ -27,7 +29,12 @@ import Testing
     .enabled(if: ProcessInfo.processInfo.environment["PADDOCK_LIVE_HERDR"] == "1")
 )
 struct WorkspaceStoreHardeningLiveTests {
-    private static let defaultQASessionName = "paddock-qa"
+    /// A fresh name per suite instance: the session is then guaranteed to be
+    /// this run's own, and the `herdr session delete` at the end cannot hit a
+    /// stopped session somebody kept under a fixed name.
+    private static var defaultQASessionName: String {
+        "paddock-qa-" + UUID().uuidString.lowercased().prefix(8)
+    }
 
     /// Whether the running test started the throwaway session, and so owns it.
     /// A box rather than a `var` on the suite: `withQASession` and a restart
@@ -176,11 +183,17 @@ struct WorkspaceStoreHardeningLiveTests {
     /// A session that is already up is left alone, but it still goes through
     /// `ensureQASpace()`: the restart in the middle of
     /// `aSessionThatStopsKeepsItsRowsAndComesBack` comes back through here and
-    /// has to find its spaces again.
+    /// has to find its spaces again. A session this run does not own yet must
+    /// not exist at all, not even stopped, because teardown deletes it.
     private func startQASession(_ ownership: Ownership) async throws {
         if try await isRunning(qaSession) {
             try await ensureQASpace()
             return
+        }
+        if !ownership.owned, try await exists(qaSession) {
+            throw PaddockError.invalidSessionName(
+                "\(qaSession): already exists; the live suite only works on a session it created"
+            )
         }
         ownership.owned = true
         let command = "\(ShellQuote.singleQuoted(herdrExecutable.path))"
@@ -258,6 +271,10 @@ struct WorkspaceStoreHardeningLiveTests {
 
     private func isRunning(_ name: SessionName) async throws -> Bool {
         try await herdr.listSessions().contains { $0.name == name && $0.isRunning }
+    }
+
+    private func exists(_ name: SessionName) async throws -> Bool {
+        try await herdr.listSessions().contains { $0.name == name }
     }
 
     /// The running sessions to test against, the throwaway one first so a

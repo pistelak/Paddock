@@ -11,7 +11,11 @@ struct SessionNameTests {
         #expect(try SessionName(raw).rawValue == trimmed)
     }
 
-    @Test(arguments: ["", "   ", "my space", "a;b", "$(x)", "ünïcode", String(repeating: "a", count: 65)])
+    @Test(arguments: [
+        "", "   ", "my space", "a;b", "$(x)", "ünïcode", String(repeating: "a", count: 65),
+        // Would resolve to the sessions directory itself, or its parent.
+        ".", "..", " .. ",
+    ])
     func rejectsShellSensitiveNames(bad: String) {
         #expect(throws: PaddockError.invalidSessionName(bad)) {
             try SessionName(bad)

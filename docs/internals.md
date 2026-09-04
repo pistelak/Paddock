@@ -77,8 +77,10 @@ xcodebuild test-without-building -destination platform=macOS \
 ```
 
 They read `work` and `default` and only ever mutate a throwaway space (`paddock-e2e-*`) or a throwaway
-session (`paddock-qa`, started headlessly with `herdr --session paddock-qa server`), which
-`PADDOCK_LIVE_HERDR_SOCKET` and `PADDOCK_LIVE_HERDR_QA_SESSION` override.
+session (`paddock-qa-<random>`, started headlessly with `herdr --session <name> server` and deleted
+afterwards), which `PADDOCK_LIVE_HERDR_SOCKET` and `PADDOCK_LIVE_HERDR_QA_SESSION` override. The
+hardening suite refuses to run against a session that already exists, so an override cannot point it at
+one of yours.
 
 ## Troubleshooting
 

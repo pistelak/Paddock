@@ -22,8 +22,6 @@ import Testing
 ///
 /// `PADDOCK_LIVE_HERDR_SOCKET` picks the session; it defaults to `work`.
 /// Everything here is read-only: nothing in this suite mutates the session.
-/// which creates a space of its own and only ever focuses, renames and closes
-/// *that* one — no space the user made is touched.
 @Suite(.enabled(if: ProcessInfo.processInfo.environment["PADDOCK_LIVE_HERDR"] == "1"))
 struct WorkspaceStoreLiveTests {
     private let socketPath = ProcessInfo.processInfo.environment["PADDOCK_LIVE_HERDR_SOCKET"]
