@@ -4,9 +4,11 @@ import AppKit
 /// renders whatever it is given and reports clicks through closures.
 @MainActor
 final class SidebarViewController: NSViewController {
+    /// Read by the split view item that hosts the strip; the view itself
+    /// has no width constraint, the item owns it.
     static let width: CGFloat = 64
-    /// Clears the traffic lights, which sit inside the tile strip.
-    private static let topInset: CGFloat = 48
+    /// The title bar sits outside this view.
+    private static let topGap: CGFloat = 12
 
     var onAction: ((SidebarAction, UUID) -> Void)?
     var onAdd: ((NSView) -> Void)?
@@ -16,11 +18,8 @@ final class SidebarViewController: NSViewController {
     private var items: [UUID: SessionTabItemView] = [:]
 
     override func loadView() {
-        let background = NSVisualEffectView()
-        background.material = .sidebar
-        background.blendingMode = .behindWindow
-        background.state = .followsWindowActiveState
-        view = background
+        // A plain view on the window background; the split item owns the width.
+        view = NSView()
 
         stack.orientation = .vertical
         stack.alignment = .centerX
@@ -31,8 +30,7 @@ final class SidebarViewController: NSViewController {
         addButton.onClick = { [weak self] anchor in self?.onAdd?(anchor) }
 
         NSLayoutConstraint.activate([
-            view.widthAnchor.constraint(equalToConstant: Self.width),
-            stack.topAnchor.constraint(equalTo: view.topAnchor, constant: Self.topInset),
+            stack.topAnchor.constraint(equalTo: view.topAnchor, constant: Self.topGap),
             stack.centerXAnchor.constraint(equalTo: view.centerXAnchor),
             stack.bottomAnchor.constraint(lessThanOrEqualTo: view.bottomAnchor, constant: -12),
         ])

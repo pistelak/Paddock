@@ -4,6 +4,9 @@ import AppKit
 /// the view hierarchy with their bounds intact; only `isHidden` and surface
 /// visibility change on selection, so libghostty never tears a surface down.
 ///
+/// The window's traditional title bar is outside the content view, so every
+/// pane fills this container directly in windowed and full-screen layouts.
+///
 /// It does not remember which pane is selected: the coordinator owns the
 /// selection and names the pane in every call that needs one.
 @MainActor

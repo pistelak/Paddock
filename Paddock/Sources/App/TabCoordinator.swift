@@ -91,8 +91,8 @@ final class TabCoordinator {
         defaults.set(id?.uuidString, forKey: Self.selectedTabKey)
     }
 
-    /// Puts the keyboard into the selected tab's pane — after a layout change,
-    /// or after the strip was shown or hidden.
+    /// Puts the keyboard into the selected tab's pane once the strip has
+    /// finished showing or hiding.
     func focusSelectedPane() {
         guard let selectedTabID else { return }
         panes.focusPane(selectedTabID)

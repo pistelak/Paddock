@@ -1,20 +1,25 @@
 import AppKit
 
+/// A traditional macOS terminal window: a compact system title bar above
+/// custom content, no toolbar, and AppKit-owned full screen.
 @MainActor
 final class MainWindowController: NSWindowController, NSMenuItemValidation {
     private static let defaultContentSize = NSSize(width: 1100, height: 720)
-    /// Wide enough to keep a usable terminal next to the 64 pt tile strip.
-    private static let minimumContentSize = NSSize(width: 560, height: 360)
     private static let sidebarHiddenKey = "sidebarHidden"
     private static let frameAutosaveName = "Main"
 
     private let defaults: UserDefaults
 
+    /// Called when a toggle has finished, so whoever owns the selection can
+    /// put the keyboard back where it belongs. May run twice when one toggle
+    /// interrupts another, so it must be idempotent.
+    var onSidebarToggled: (() -> Void)?
+
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
         let window = NSWindow(
             contentRect: NSRect(origin: .zero, size: Self.defaultContentSize),
-            styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
+            styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,
             defer: false
         )
@@ -22,7 +27,8 @@ final class MainWindowController: NSWindowController, NSMenuItemValidation {
         // No window tabs: AppKit would otherwise inject Show/Hide Tab Bar
         // items into the View menu.
         window.tabbingMode = .disallowed
-        window.contentMinSize = Self.minimumContentSize
+        // A fallback only: the content's constraints are what hold the size.
+        window.contentMinSize = MainContentViewController.minimumSize
         window.isReleasedWhenClosed = false
         window.center()
         window.setFrameAutosaveName(Self.frameAutosaveName)
@@ -34,19 +40,20 @@ final class MainWindowController: NSWindowController, NSMenuItemValidation {
         fatalError("init(coder:) is not supported")
     }
 
-    /// Installs the app's content and restores the persisted strip state.
+    /// Installs the app's content with the persisted strip state.
     func install(_ content: MainContentViewController) {
+        // The state goes on before the view reaches the window, so a hidden
+        // strip never shows for a frame and nothing animates on launch.
+        content.setSidebarHidden(defaults.bool(forKey: Self.sidebarHiddenKey), animated: false) {}
         contentViewController = content
         // Installing a content view controller resizes the window to the
-        // content's fitting size — the fixed-width tile strip, since the
-        // panes have no intrinsic size — clamped to `contentMinSize`. That
-        // would open every window at the minimum, so the frame is put back:
-        // the autosaved one, or the default on first launch.
+        // content's fitting size — the minimum, since the panes have no
+        // intrinsic size. That would open every window at the minimum, so the
+        // frame is put back: the autosaved one, or the default on first launch.
         if let window, !window.setFrameUsingName(Self.frameAutosaveName) {
             window.setContentSize(Self.defaultContentSize)
             window.center()
         }
-        applySidebarHidden(defaults.bool(forKey: Self.sidebarHiddenKey))
     }
 
     // MARK: - Sidebar
@@ -63,24 +70,13 @@ final class MainWindowController: NSWindowController, NSMenuItemValidation {
         setSidebarHidden(!isSidebarHidden)
     }
 
+    /// A toggle that interrupts another just re-focuses the terminal twice,
+    /// which is harmless, so completions need no bookkeeping.
     func setSidebarHidden(_ hidden: Bool) {
+        guard let content else { return }
         defaults.set(hidden, forKey: Self.sidebarHiddenKey)
-        applySidebarHidden(hidden)
-    }
-
-    /// With the sidebar visible the traffic lights sit inside the sidebar
-    /// strip and the title bar is invisible. Without it the terminal would
-    /// run under the traffic lights, so the window gets a regular title bar
-    /// back and the title (the active session) becomes the only context.
-    private func applySidebarHidden(_ hidden: Bool) {
-        guard let window, let content else { return }
-        content.isSidebarHidden = hidden
-        window.titlebarAppearsTransparent = !hidden
-        window.titleVisibility = hidden ? .visible : .hidden
-        if hidden {
-            window.styleMask.remove(.fullSizeContentView)
-        } else {
-            window.styleMask.insert(.fullSizeContentView)
+        content.setSidebarHidden(hidden, animated: true) { [weak self] in
+            self?.onSidebarToggled?()
         }
     }
 

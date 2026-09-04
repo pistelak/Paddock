@@ -79,7 +79,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let notices = await loadOrSeed(store, using: coordinator.herdr)
 
         let content = MainContentViewController(sidebar: coordinator.sidebar, panes: coordinator.panes)
-        content.onLayoutChange = { [weak coordinator] in coordinator?.focusSelectedPane() }
+        windowController.onSidebarToggled = { [weak coordinator] in coordinator?.focusSelectedPane() }
         windowController.install(content)
         coordinator.window = windowController.window
         coordinator.start()

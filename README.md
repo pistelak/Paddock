@@ -90,6 +90,10 @@ when needed.
 
 **Hiding the sidebar.** View ▸ Hide Sidebar, or Ctrl+Cmd+S. Paddock remembers the choice.
 
+**Full screen.** Window ▸ Enter Full Screen, or Ctrl+Cmd+F, uses the standard macOS full-screen Space and
+animation. The title bar stays hidden until macOS reveals it at the top edge; use the same command to
+leave full screen.
+
 **Where things live.** Tabs, names and colours are in
 `~/Library/Application Support/Paddock/tabs.json`. Paddock never writes to herdr's or Ghostty's config.
 
