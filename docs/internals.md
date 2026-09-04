@@ -43,6 +43,12 @@ odd. The user-facing guide is the [README](../README.md).
   toolbar installed, the reveal contains only the compact system title bar.
 - No app-level Command shortcuts beyond the sidebar toggle and the standard application menu: herdr
   receives Command chords through the kitty keyboard protocol and owns them.
+- Updates come through [Sparkle](https://sparkle-project.org): the app reads the appcast at
+  `https://pistelak.github.io/Paddock/appcast.xml` once a day and asks before installing. Builds are
+  ad-hoc signed, so every update is verified by its EdDSA signature (`SUPublicEDKey` in `project.yml`)
+  rather than by a Developer ID. A development build (`make run`) carries version `0.0.0`, build `0`,
+  and never starts the updater; its "Check for Updates…" item stays disabled. How a release is cut is in
+  [releasing.md](releasing.md).
 
 ## App icon
 

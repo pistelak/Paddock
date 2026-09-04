@@ -1,21 +1,33 @@
 import AppKit
+import Sparkle
 
 /// A deliberately small main menu. There is no Edit menu on purpose: the
 /// terminal handles Cmd+C / Cmd+V itself through Ghostty's keybindings, and
 /// an Edit menu would intercept those key equivalents first.
+///
+/// "Check for Updates…" has no key equivalent, like everything here that is
+/// not a standard application-menu item. Sparkle enables it only while its
+/// updater is running, so in a development build it is present but greyed
+/// out — the visible sign that this is not a release.
 @MainActor
 enum MainMenu {
-    static func build() -> NSMenu {
+    static func build(updater: SPUStandardUpdaterController) -> NSMenu {
         let main = NSMenu()
-        main.addItem(appMenuItem())
+        main.addItem(appMenuItem(updater: updater))
         main.addItem(viewMenuItem())
         main.addItem(windowMenuItem())
         return main
     }
 
-    private static func appMenuItem() -> NSMenuItem {
+    private static func appMenuItem(updater: SPUStandardUpdaterController) -> NSMenuItem {
         let menu = NSMenu()
         menu.addItem(withTitle: "About Paddock", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
+        let checkForUpdates = menu.addItem(
+            withTitle: "Check for Updates…",
+            action: #selector(SPUStandardUpdaterController.checkForUpdates(_:)),
+            keyEquivalent: ""
+        )
+        checkForUpdates.target = updater
         menu.addItem(.separator())
         menu.addItem(withTitle: "Hide Paddock", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
         let hideOthers = menu.addItem(withTitle: "Hide Others", action: #selector(NSApplication.hideOtherApplications(_:)), keyEquivalent: "h")

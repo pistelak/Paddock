@@ -1,5 +1,6 @@
 import AppKit
 import GhosttyTerminal
+import Sparkle
 
 /// Paddock is a single-window app: closing the window quits, window tabbing
 /// is off, and the menu offers no second window. Everything window-scoped
@@ -10,6 +11,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var mainWindowController: MainWindowController?
     private var coordinator: TabCoordinator?
 
+    /// Sparkle, checking the feed in `SUFeedURL` once a day and asking before
+    /// it installs anything. It is started only for a versioned build: a
+    /// development build carries `CFBundleVersion` 0 (see `project.yml`) and
+    /// must neither poll the feed nor offer to replace itself with a release.
+    private let updater: SPUStandardUpdaterController
+
+    override init() {
+        let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String
+        updater = SPUStandardUpdaterController(
+            startingUpdater: Self.isVersionedBuild(build),
+            updaterDelegate: nil,
+            userDriverDelegate: nil
+        )
+        super.init()
+    }
+
+    /// `nil` and `"0"` are the development placeholder; anything else came
+    /// off a release tag.
+    static func isVersionedBuild(_ bundleVersion: String?) -> Bool {
+        guard let bundleVersion else { return false }
+        return bundleVersion != "0"
+    }
+
     func applicationDidFinishLaunching(_: Notification) {
         HerdrEnvironment.scrubInheritedMarkers()
         NSWindow.allowsAutomaticWindowTabbing = false
@@ -17,7 +41,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             TerminalDebugLog.enable(.standard)
             TerminalDebugLog.sink = { message in NSLog("%@", message) }
         #endif
-        NSApp.mainMenu = MainMenu.build()
+        NSApp.mainMenu = MainMenu.build(updater: updater)
         Task { await bootstrap() }
     }
 
