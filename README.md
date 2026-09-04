@@ -131,3 +131,14 @@ dog on the icon is an Australian Shepherd, because the author's is.
   terminal inside every tab.
 - [Heeler](https://github.com/ZingerLittleBee/Heeler), a native iOS console for herdr, if you want the
   same view of your agents from a phone.
+
+Two unrelated projects share the name: [herdr-paddock](https://github.com/neyham/herdr-paddock), a
+card-wall feed of herdr agents for a phone over SSH, and
+[Storm Born's Paddock](https://stormborn.software/paddock/), a commercial macOS terminal with its own
+session daemon. This Paddock is neither; it is a window around herdr.
+
+## License
+
+MIT, see [LICENSE](LICENSE). The app ships Ghostty, libghostty-spm, MSDisplayLink, bash-preexec and
+Sparkle, all under permissive licenses reproduced in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)
+and in the About panel.

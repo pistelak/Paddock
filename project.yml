@@ -37,7 +37,7 @@ targets:
         NSPrincipalClass: NSApplication
         NSHighResolutionCapable: true
         LSApplicationCategoryType: public.app-category.developer-tools
-        NSHumanReadableCopyright: ""
+        NSHumanReadableCopyright: "© 2026 Radek Pistelak. MIT License."
     entitlements:
       path: Paddock/Paddock.entitlements
       properties: {}
