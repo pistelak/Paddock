@@ -13,7 +13,7 @@ packages:
   # (see docs/releasing.md).
   GhosttyKit:
     url: https://github.com/Lakr233/libghostty-spm.git
-    exactVersion: 2.2.2026100902
+    exactVersion: 2.2.2026101003
   Sparkle:
     url: https://github.com/sparkle-project/Sparkle.git
     exactVersion: 2.9.6
