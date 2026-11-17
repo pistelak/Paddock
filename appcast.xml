@@ -3,6 +3,18 @@
     <channel>
         <title>Paddock</title>
         <item>
+            <title>0.2.24</title>
+            <pubDate>Tue, 17 Nov 2026 12:56:40 +0000</pubDate>
+            <link>https://github.com/pistelak/Paddock</link>
+            <sparkle:version>0.2.24</sparkle:version>
+            <sparkle:shortVersionString>0.2.24</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+            <description><![CDATA[<ul><li>libghostty-spm 2.2.2026111601 → 2.2.2026111701 (<a href="https://github.com/Lakr233/libghostty-spm/releases/tag/2.2.2026111701">upstream release notes</a>)</li></ul>
+<p><a href="https://github.com/pistelak/Paddock/releases/tag/v0.2.24">Full release notes on GitHub</a></p>
+]]></description>
+            <enclosure url="https://github.com/pistelak/Paddock/releases/download/v0.2.24/Paddock-0.2.24.zip" length="13368575" type="application/octet-stream" sparkle:edSignature="pYenXvXyRAE5EFr2urwKorGMXkoA36rCWMcK7QBOdYjFFCMsTIvPzNFR1FCOFcS+v4Z3HDMvf5YUr8OvWFB+CA=="/>
+        </item>
+        <item>
             <title>0.2.23</title>
             <pubDate>Tue, 17 Nov 2026 04:04:40 +0000</pubDate>
             <link>https://github.com/pistelak/Paddock</link>
